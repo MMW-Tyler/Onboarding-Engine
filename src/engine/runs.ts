@@ -2,6 +2,7 @@ import { db } from '../supabase.js';
 import { getStep, hasStep } from '../steps/registry.js';
 import { recipeSteps } from '../recipes.js';
 import { defaultMaxAttempts, defaultProfileFor } from './retry.js';
+import { clearEchoBudget } from '../steps/echo.js';
 import type { RunMode } from '../config.js';
 import { getRunMode } from '../config.js';
 import type { RunStep, StepStatus } from '../types.js';
@@ -150,6 +151,10 @@ export async function promoteDependents(runId: string, completedStepKey: string)
 export async function retryStep(runId: string, stepKey: string): Promise<void> {
   const step = await loadStep(runId, stepKey);
   if (!step) throw new Error(`retryStep: no such step ${stepKey} on run ${runId}`);
+  // Test fixture: clear the echo step's in-memory fail budget so retry gives a
+  // clean attempt rather than continuing the persistent failure simulation.
+  // No-op for non-echo steps.
+  if (stepKey.startsWith('echo.')) clearEchoBudget(runId, stepKey);
   await db().from('run_steps')
     .update({ status: 'pending', attempts: 0, last_error: null, updated_at: new Date().toISOString() })
     .eq('id', step.id);

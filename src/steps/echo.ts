@@ -90,3 +90,13 @@ export const echoSteps: Step[] = [
 export function _resetEchoBudget(): void {
   failBudget.clear();
 }
+
+/**
+ * Clear the budget for one run+step. Called from retryStep so a user clicking
+ * "retry" on a flagged echo step actually gets a clean attempt. Without this
+ * the budget persists across retries (simulating a still-broken external
+ * service), which is realistic but confusing for the lifecycle demo.
+ */
+export function clearEchoBudget(runId: string, stepKey: string): void {
+  failBudget.delete(budgetKey(runId, stepKey));
+}
