@@ -92,11 +92,13 @@ export function _resetEchoBudget(): void {
 }
 
 /**
- * Clear the budget for one run+step. Called from retryStep so a user clicking
- * "retry" on a flagged echo step actually gets a clean attempt. Without this
- * the budget persists across retries (simulating a still-broken external
- * service), which is realistic but confusing for the lifecycle demo.
+ * Force the next attempt of this run+step to SUCCEED. Called from retryStep so a
+ * user clicking "retry" on a flagged echo step actually gets a clean pass.
+ *
+ * We set the budget to 0 (not delete it): echoExec only re-reads the configured
+ * failTimes when the key is ABSENT, so deleting would reset it back to the full
+ * configured count and the step could never clear. An explicit 0 sticks.
  */
 export function clearEchoBudget(runId: string, stepKey: string): void {
-  failBudget.delete(budgetKey(runId, stepKey));
+  failBudget.set(budgetKey(runId, stepKey), 0);
 }
