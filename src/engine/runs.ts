@@ -20,6 +20,8 @@ export interface CreateRunArgs {
   mode?: RunMode;
   /** arbitrary intake payload; echo steps read failTimes from input.echo */
   input?: Record<string, unknown>;
+  /** raw Client MMW form payload -> raw_clientform_json (Wave 2) */
+  clientformInput?: Record<string, unknown>;
 }
 
 export interface CreateRunResult {
@@ -56,6 +58,7 @@ export async function createRun(args: CreateRunArgs): Promise<CreateRunResult> {
       package: args.client?.package ?? null,
       domain: args.client?.domain ?? null,
       raw_intake_json: args.input ?? {},
+      raw_clientform_json: args.clientformInput ?? null,
     })
     .select('id')
     .single();
@@ -91,6 +94,49 @@ export async function createRun(args: CreateRunArgs): Promise<CreateRunResult> {
   }
 
   return { runId, steps: stepKeys, queued: ready };
+}
+
+/**
+ * Attach steps to an existing run (used by the Client MMW form webhook to add
+ * Wave 2 onto the run created from the Sales Intake form). Inserts any missing
+ * run_steps, wiring depends_on to steps already on the run plus the new set, and
+ * enqueues the ones whose dependencies are already satisfied. Returns added keys.
+ */
+export async function addStepsToRun(runId: string, stepKeys: string[]): Promise<string[]> {
+  const unknown = stepKeys.filter((k) => !hasStep(k));
+  if (unknown.length > 0) throw new Error(`addStepsToRun: unregistered steps: ${unknown.join(', ')}`);
+
+  const { data: existing, error } = await db().from('run_steps').select('step_key, status').eq('run_id', runId);
+  if (error) throw new Error(`addStepsToRun: ${error.message}`);
+  const statusByKey = new Map<string, StepStatus>((existing ?? []).map((s) => [s.step_key as string, s.status as StepStatus]));
+
+  const toAdd = stepKeys.filter((k) => !statusByKey.has(k));
+  if (toAdd.length === 0) return [];
+
+  const selected = new Set<string>([...statusByKey.keys(), ...stepKeys]);
+  const rows = toAdd.map((key) => {
+    const step = getStep(key)!;
+    const deps = step.dependsOn.filter((d) => selected.has(d));
+    return {
+      run_id: runId,
+      step_key: key,
+      wave: step.wave,
+      safety_class: step.safetyClass,
+      status: 'pending' as StepStatus,
+      max_attempts: step.maxAttempts ?? defaultMaxAttempts(step.retryProfile ?? defaultProfileFor(step.safetyClass)),
+      depends_on: deps,
+      idempotency_key: `${runId}:${key}`,
+    };
+  });
+  const { error: insErr } = await db().from('run_steps').insert(rows);
+  if (insErr) throw new Error(`addStepsToRun: insert: ${insErr.message}`);
+
+  // Enqueue new steps whose deps are already satisfied on the run.
+  const ready = rows
+    .filter((r) => r.depends_on.every((d) => SATISFIED.has(statusByKey.get(d) ?? ('pending' as StepStatus))))
+    .map((r) => r.step_key);
+  if (ready.length > 0) await enqueueJobs(runId, ready);
+  return toAdd;
 }
 
 /** Insert queued jobs for the given steps (idempotent on (run_id, step_key)). */

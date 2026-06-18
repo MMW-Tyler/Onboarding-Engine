@@ -17,6 +17,7 @@ export const SENSITIVE_KEYS = new Set([
   'state_license',
   'domain_credentials',
   'website_credentials',
+  'dns_credentials',
 ]);
 
 const REDACTED = '[REDACTED]';

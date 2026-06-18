@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
 import { createRun, retryStep, retryAllFlagged } from '../engine/runs.js';
+import { redact } from '../redact.js';
 
 export const runsRouter = Router();
 
@@ -49,7 +50,13 @@ runsRouter.get('/runs/:id', async (req, res) => {
     db().from('step_events').select('*').eq('run_id', id).order('ts', { ascending: false }).limit(100),
   ]);
   if (!run.data) return res.status(404).json({ error: 'run not found' });
-  return res.json({ run: run.data, steps: steps.data ?? [], events: events.data ?? [] });
+  // Redact masks sensitive client keys (npi/dea/credentials/...) by name, so the
+  // restricted profile bucket and any step output never expose raw values.
+  return res.json({
+    run: redact(run.data),
+    steps: redact(steps.data ?? []),
+    events: events.data ?? [],
+  });
 });
 
 /** POST /runs/:id/steps/:key/retry - rerun one step (spec section 10). */

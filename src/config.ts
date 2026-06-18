@@ -31,9 +31,53 @@ export const config = {
   supabaseUrl: () => required('SUPABASE_URL'),
   supabaseServiceKey: () => required('SUPABASE_SERVICE_KEY'),
 
+  anthropicApiKey: () => required('ANTHROPIC_API_KEY'),
+
+  slack: {
+    botToken: () => required('SLACK_BOT_TOKEN'),
+    fallbackChannelId: () => optional('SLACK_FALLBACK_CHANNEL_ID'),
+  },
+  hubspot: {
+    accessToken: () => required('HUBSPOT_ACCESS_TOKEN'),
+  },
+  clickup: {
+    apiToken: () => required('CLICKUP_API_TOKEN'),
+    templateListId: () => optional('CLICKUP_TEMPLATE_LIST_ID', '901712755167'),
+    teamId: () => optional('CLICKUP_TEAM_ID'),
+  },
+  drive: {
+    saJson: () => required('GDRIVE_SA_JSON'),
+    parentFolderId: () => required('CLIENTS_PARENT_FOLDER_ID'),
+  },
   namecheap: {
+    apiUser: () => required('NAMECHEAP_API_USER'),
+    apiKey: () => required('NAMECHEAP_API_KEY'),
+    clientIp: () => required('NAMECHEAP_CLIENT_IP'),
     baseUrl: optional('NAMECHEAP_BASE_URL', 'https://api.sandbox.namecheap.com'),
     live: process.env.NAMECHEAP_LIVE === 'true',
+  },
+  mailgun: {
+    apiKey: () => required('MAILGUN_API_KEY'),
+    region: () => optional('MAILGUN_REGION', 'us'),
+  },
+  warmup: {
+    apiKey: () => required('WARMUPINBOX_API_KEY'),
+  },
+  ghl: {
+    apiKey: () => required('GHL_API_KEY'),
+    agencyLocationId: () => optional('GHL_AGENCY_LOCATION_ID'),
+    snapshotId: () => optional('GHL_SNAPSHOT_ID'),
+    a2pFieldMap: () => optional('GHL_A2P_CUSTOM_FIELD_MAP'),
+  },
+  dataforseo: {
+    login: () => required('DATAFORSEO_LOGIN'),
+    password: () => required('DATAFORSEO_PASSWORD'),
+  },
+  googlePlaces: {
+    apiKey: () => required('GOOGLE_PLACES_API_KEY'),
+  },
+  adviceLocal: {
+    apiKey: () => required('ADVICELOCAL_API_KEY'),
   },
 };
 

@@ -1,17 +1,17 @@
 /**
  * Recipes: named step bundles (spec section 05). Kept as data so bundles can
- * change without code edits.
+ * change without code edits. createRun() validates every key is registered.
  *
- * M1 ships `echo_demo` only - the real recipes below list their intended steps
- * but those step workers are built in later milestones (M2+). createRun()
- * validates that every step key in a chosen recipe is registered, so selecting
- * a not-yet-built recipe fails loudly rather than silently dropping steps.
+ * M4 ships Wave 1 (forms -> Slack/HubSpot/ClickUp/Drive/domain+email stack/GHL)
+ * plus the client-form normalization + Slack profile post. The Wave 2 AI research
+ * (Prompts 3-6), A2P, Advice Local, and rollup land in M5 and will be added to
+ * full_onboarding / wave2_research then.
  */
 export const recipes: Record<string, string[]> = {
   // M1 lifecycle test bundle
   echo_demo: ['echo.root', 'echo.child', 'echo.leaf'],
 
-  // --- real recipes (steps land in later milestones) ---
+  // Wave 1: standard new client via the Sales Intake form
   full_onboarding: [
     'profile.normalize_intake',
     'slack.create_channel',
@@ -28,18 +28,9 @@ export const recipes: Record<string, string[]> = {
     'warmup.enroll',
     'ghl.provision_subaccount',
     'phase0.gate',
-    'profile.normalize_clientform',
-    'slack.post_clientform_profile',
-    'ghl.a2p_registration',
-    'gbp.optimize_plan',
-    'crawl.site_report',
-    'dataforseo.pull',
-    'seo.roadmap',
-    'research.press_topics',
-    'research.content_calendar',
-    'advicelocal.listings',
-    'wave2.rollup',
   ],
+
+  // Device-partner client: sending infra, no SEO/research
   device_client_setup: [
     'ghl.provision_subaccount',
     'namecheap.purchase_domain',
@@ -48,7 +39,11 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'warmup.enroll',
   ],
+
+  // Text-blast-only client
   ghl_only: ['ghl.provision_subaccount'],
+
+  // Email stack for an existing client
   domain_warmup_only: [
     'namecheap.purchase_domain',
     'dns.ghl_records',
@@ -56,6 +51,10 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'warmup.enroll',
   ],
+
+  // Wave 2 (M4 subset): normalize the client form + post the profile to Slack.
+  // AI research (gbp/crawl/seo/press/calendar), A2P, Advice Local, rollup: M5.
+  wave2_research: ['profile.normalize_clientform', 'slack.post_clientform_profile'],
 };
 
 export function recipeSteps(recipe: string): string[] | undefined {

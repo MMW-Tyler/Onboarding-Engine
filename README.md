@@ -86,8 +86,24 @@ curl localhost:10000/status               # mode + step/job tallies
 
 - **M1 — engine + checklist + log: implemented.** Express app, Supabase schema,
   checklist loop, generic step-runner (modes, safety classes, retry/idempotency,
-  redaction), echo test steps, run API + minimal status endpoints, `render.yaml`.
-- M2 — dashboard UI + real read-safe/reversible workers (dry-run harness): next.
-- M3 — recipes + first live reversible test.
-- M4 — forms + Slack profile (Prompts 1–2), Wave 1 live.
-- M5 — Wave 2 AI (Prompts 3–6) + Namecheap live behind the two-key unlock.
+  redaction), echo test steps, run API, `render.yaml`.
+- **M2 — dashboard + workers: implemented.** Dashboard UI (grid, trigger panel,
+  event feed, rerun, dry/live toggle). All Wave 1 integration workers built with
+  live + dry paths: Slack, HubSpot, ClickUp, Drive, Namecheap (sandbox), DNS,
+  Mailgun, Warmup, GHL.
+- **M3 — recipes + partial runs: implemented.** `full_onboarding`,
+  `device_client_setup`, `ghl_only`, `domain_warmup_only`, `wave2_research`
+  recipes; hand-selected steps supported.
+- **M4 — forms + Slack profile: implemented.** Zapier webhooks create runs;
+  Prompts 1–2 normalize both forms (deterministic table + AI fallback);
+  sensitive fields (NPI/DEA/license/credentials) routed to a restricted bucket
+  and redacted on all API output; Slack channel + profile post + pinned
+  client-profile.json. Run all in dry-run to validate, then flip `RUN_MODE=live`.
+- M5 — Wave 2 AI (Prompts 3–6: GBP/crawl/SEO/press/calendar), A2P, Advice Local,
+  rollup; Namecheap live behind the two-key unlock. **Next.**
+
+> Live API calls for non-Slack integrations were written against documented APIs
+> but are **unverified** until exercised with real credentials. Workers carry
+> `TODO` markers where provider-specific details (registrant info, DKIM values,
+> GHL endpoints/version, Warmup Inbox API, ClickUp template cloning) need
+> confirmation. Validate each in dry-run first, then one controlled live test.
