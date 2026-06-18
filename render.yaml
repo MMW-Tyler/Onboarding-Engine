@@ -1,0 +1,30 @@
+# One always-on Render service runs the whole engine:
+# webhook listeners + dashboard + the background checklist loop.
+# See spec section 03 (architecture) and section 16 (build order, M1).
+services:
+  - type: web
+    name: onboard-engine
+    runtime: node
+    plan: starter            # always-on, ~$7/mo
+    autoDeploy: true
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: RUN_MODE
+        value: dry           # safe default; flip to live deliberately
+      - key: NAMECHEAP_BASE_URL
+        value: https://api.sandbox.namecheap.com
+      - key: NAMECHEAP_LIVE
+        value: "false"
+      - key: CLICKUP_TEMPLATE_LIST_ID
+        value: "901712755167"
+      # All secrets below are set in the Render dashboard, never committed.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: MMW_WEBHOOK_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
