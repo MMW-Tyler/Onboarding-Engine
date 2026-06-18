@@ -1,9 +1,14 @@
 import express from 'express';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { config, getRunMode } from './config.js';
 import { startLoop } from './engine/loop.js';
 import { runsRouter } from './routes/runs.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { dashboardRouter } from './routes/dashboard.js';
+
+// public/ lives at the repo root, one level above the compiled dist/ dir.
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 /**
  * One always-on Render service (spec section 03): it listens for webhooks,
@@ -19,24 +24,9 @@ app.use(webhooksRouter);
 app.use(runsRouter);
 app.use(dashboardRouter);
 
+// The dashboard UI (spec section 10) is served at the root.
 app.get('/', (_req, res) => {
-  res.type('text/plain').send(
-    [
-      'MMW OnboardEngine',
-      `mode: ${getRunMode()}`,
-      '',
-      'GET  /healthz',
-      'GET  /status',
-      'POST /mode               {mode: dry|live}',
-      'POST /runs               {recipe, client?, mode?, input?, stepKeys?}',
-      'GET  /runs',
-      'GET  /runs/:id',
-      'POST /runs/:id/steps/:key/retry',
-      'POST /runs/:id/retry-flagged',
-      'POST /webhook/intake     (Zapier doorbell)',
-      'POST /webhook/clientform (Zapier doorbell)',
-    ].join('\n'),
-  );
+  res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
 });
 
 app.listen(config.port, () => {

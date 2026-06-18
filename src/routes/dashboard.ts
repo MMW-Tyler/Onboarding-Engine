@@ -2,13 +2,18 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
 import { getRunMode, setRunMode } from '../config.js';
+import { recipes } from '../recipes.js';
 
 /**
- * Minimal control/status surface for M1. The full dashboard UI (run grid, event
- * feed, manual trigger panel) is M2; these JSON endpoints back it and are usable
- * directly during the connectivity phase.
+ * Control/status surface backing the dashboard UI (spec section 10): status,
+ * the dry/live toggle, and the recipe list for the manual trigger panel.
  */
 export const dashboardRouter = Router();
+
+/** GET /recipes - recipe names + their step keys, for the trigger panel. */
+dashboardRouter.get('/recipes', (_req, res) => {
+  return res.json(recipes);
+});
 
 /** GET /status - current mode + run/step/job counts. */
 dashboardRouter.get('/status', async (_req, res) => {

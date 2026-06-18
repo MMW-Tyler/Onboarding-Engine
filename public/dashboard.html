@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OnboardEngine Dashboard</title>
+<style>
+  :root {
+    --bg:#11140f; --panel:#1b1f17; --panel2:#232820; --line:#33392c;
+    --ink:#ece7d8; --muted:#9a9684; --accent:#c2410c; --accent2:#1d4d3e;
+    --green:#3f9d52; --blue:#3b82c4; --amber:#d99a2b; --red:#c0392b; --grey:#6b6f60;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14px; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
+    border-bottom:2px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:17px; margin:0; letter-spacing:.04em; }
+  .mode-banner { font-weight:700; letter-spacing:.12em; padding:5px 14px; border-radius:4px; }
+  .mode-dry { background:var(--accent2); color:#dff5ec; }
+  .mode-live { background:var(--red); color:#fff; }
+  button { font-family:inherit; font-size:13px; cursor:pointer; border:1px solid var(--line);
+    background:var(--panel2); color:var(--ink); padding:6px 12px; border-radius:4px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.tiny { padding:2px 8px; font-size:11px; }
+  .wrap { display:grid; grid-template-columns:320px 1fr; gap:0; min-height:calc(100vh - 55px); }
+  .col { padding:18px 22px; }
+  .left { border-right:2px solid var(--line); background:var(--panel); }
+  h2 { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent);
+    margin:0 0 12px; }
+  label { display:block; font-size:11px; color:var(--muted); margin:12px 0 4px; letter-spacing:.06em; text-transform:uppercase; }
+  input, select { width:100%; font-family:inherit; font-size:13px; background:var(--panel2);
+    color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:7px 9px; }
+  .run-card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:8px 0;
+    cursor:pointer; background:var(--panel2); }
+  .run-card:hover { border-color:var(--accent); }
+  .run-card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .run-card .meta { font-size:11px; color:var(--muted); margin-top:4px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 22px; }
+  .chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:5px 10px;
+    border-radius:4px; border:1px solid var(--line); }
+  .chip .dot { width:9px; height:9px; border-radius:50%; }
+  .s-succeeded { background:rgba(63,157,82,.16); } .s-succeeded .dot { background:var(--green); }
+  .s-simulated { background:rgba(59,130,196,.16); } .s-simulated .dot { background:var(--blue); }
+  .s-running   { background:rgba(217,154,43,.16); } .s-running .dot { background:var(--amber); animation:pulse 1.2s infinite; }
+  .s-blocked   { background:rgba(217,154,43,.10); } .s-blocked .dot { background:var(--amber); }
+  .s-flagged   { background:rgba(192,57,43,.18); }  .s-flagged .dot { background:var(--red); }
+  .s-failed    { background:rgba(192,57,43,.18); }  .s-failed .dot { background:var(--red); }
+  .s-skipped   { background:rgba(107,111,96,.16); } .s-skipped .dot { background:var(--grey); }
+  .s-pending   { background:rgba(107,111,96,.08); } .s-pending .dot { background:var(--grey); }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+  th { text-align:left; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line);
+    padding:6px 8px; text-transform:uppercase; letter-spacing:.06em; font-size:10px; }
+  td { padding:6px 8px; border-bottom:1px solid rgba(51,57,44,.5); vertical-align:top; }
+  td.lvl-error { color:#e8857a; } td.lvl-warn { color:var(--amber); }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; font-size:11px; color:var(--muted); margin:6px 0 0; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; }
+  .legend .dot { width:8px; height:8px; border-radius:50%; }
+  .empty { color:var(--muted); font-style:italic; padding:20px 0; }
+  .row-actions { display:flex; gap:8px; align-items:center; margin:0 0 10px; flex-wrap:wrap; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:11px; color:var(--muted); }
+  .toast { position:fixed; bottom:18px; right:18px; background:var(--panel2); border:1px solid var(--accent);
+    padding:10px 16px; border-radius:6px; font-size:13px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MMW OnboardEngine</h1>
+  <span id="banner" class="mode-banner mode-dry">MODE: DRY</span>
+  <button id="toggleMode">Toggle dry/live</button>
+  <span id="counts" style="margin-left:auto;color:var(--muted);font-size:12px;"></span>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: trigger + run list -->
+  <div class="col left">
+    <h2>Manual trigger</h2>
+    <label>Recipe</label>
+    <select id="recipe"></select>
+    <label>Client name</label>
+    <input id="clientName" placeholder="Test Co" />
+    <label>Mode for this run</label>
+    <select id="runMode">
+      <option value="">(use global)</option>
+      <option value="dry">dry</option>
+      <option value="live">live</option>
+    </select>
+    <label>echo demo: fail echo.root N times</label>
+    <input id="failTimes" type="number" min="0" placeholder="0" />
+    <div style="margin-top:14px;">
+      <button class="primary" id="fire" style="width:100%;">Fire run</button>
+    </div>
+
+    <h2 style="margin-top:26px;">Runs</h2>
+    <div id="runs"><div class="empty">loading…</div></div>
+  </div>
+
+  <!-- RIGHT: detail -->
+  <div class="col">
+    <div id="detail"><div class="empty">Select a run, or fire one.</div></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let selectedRun = null;
+let recipes = {};
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 2600);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let body; try { body = JSON.parse(text); } catch { body = text; }
+  if (!res.ok) throw new Error((body && body.error) || res.status + ' ' + res.statusText);
+  return body;
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('/status');
+    const live = s.mode === 'live';
+    const b = $('banner');
+    b.textContent = 'MODE: ' + s.mode.toUpperCase();
+    b.className = 'mode-banner ' + (live ? 'mode-live' : 'mode-dry');
+    const fmt = (o) => Object.entries(o).map(([k, v]) => k + ':' + v).join('  ') || '—';
+    $('counts').textContent = 'steps  ' + fmt(s.steps) + '     jobs  ' + fmt(s.jobs);
+  } catch (e) { $('counts').textContent = 'status error: ' + e.message; }
+}
+
+async function loadRecipes() {
+  recipes = await api('/recipes');
+  const sel = $('recipe');
+  sel.innerHTML = '';
+  Object.keys(recipes).forEach((name) => {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name + '  (' + recipes[name].length + ' steps)';
+    sel.appendChild(o);
+  });
+}
+
+async function loadRuns() {
+  try {
+    const runs = await api('/runs');
+    const el = $('runs');
+    if (!runs.length) { el.innerHTML = '<div class="empty">no runs yet</div>'; return; }
+    el.innerHTML = '';
+    runs.forEach((r) => {
+      const d = document.createElement('div');
+      d.className = 'run-card' + (r.id === selectedRun ? ' sel' : '');
+      d.innerHTML = '<div><b>' + (r.client_name || '(no name)') + '</b></div>' +
+        '<div class="meta">' + r.recipe + ' · ' + r.mode + ' · ' +
+        new Date(r.created_at).toLocaleTimeString() + '</div>';
+      d.onclick = () => { selectedRun = r.id; loadDetail(); loadRuns(); };
+      el.appendChild(d);
+    });
+  } catch (e) { $('runs').innerHTML = '<div class="empty">runs error: ' + e.message + '</div>'; }
+}
+
+function chip(step) {
+  return '<span class="chip s-' + step.status + '" title="' + (step.last_error || step.safety_class) + '">' +
+    '<span class="dot"></span>' + step.step_key +
+    '<button class="tiny" onclick="retryStep(event,\'' + step.step_key + '\')">retry</button></span>';
+}
+
+async function loadDetail() {
+  if (!selectedRun) return;
+  try {
+    const { run, steps, events } = await api('/runs/' + selectedRun);
+    const legend = ['succeeded','simulated','running','blocked','flagged','skipped','pending']
+      .map((s) => '<span><span class="dot" style="background:var(--' +
+        ({succeeded:'green',simulated:'blue',running:'amber',blocked:'amber',flagged:'red',skipped:'grey',pending:'grey'})[s] +
+        ')"></span>' + s + '</span>').join('');
+    let html = '<div class="row-actions">' +
+      '<h2 style="margin:0;">' + (run.client_name || '(no name)') + ' · ' + run.recipe + ' · ' + run.mode + '</h2>' +
+      '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
+      '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
+      '<div class="legend">' + legend + '</div>' +
+      '<div class="chips">' + steps.map(chip).join('') + '</div>' +
+      '<h2>Event / error feed</h2>' +
+      '<table><tr><th>time</th><th>lvl</th><th>step</th><th>att</th><th>endpoint</th><th>status</th><th>detail</th></tr>' +
+      events.map((e) =>
+        '<tr><td>' + new Date(e.ts).toLocaleTimeString() + '</td>' +
+        '<td class="lvl-' + e.level + '">' + e.level + '</td>' +
+        '<td>' + e.step_key + '</td><td>' + e.attempt + '</td>' +
+        '<td>' + (e.endpoint || '') + '</td>' +
+        '<td>' + (e.response_status || '') + '</td>' +
+        '<td><pre>' + (e.parsed_error || JSON.stringify(e.response_body || e.request_redacted || '')) + '</pre></td></tr>'
+      ).join('') + '</table>';
+    $('detail').innerHTML = html;
+  } catch (e) { $('detail').innerHTML = '<div class="empty">detail error: ' + e.message + '</div>'; }
+}
+
+async function retryStep(ev, key) {
+  ev.stopPropagation();
+  try { await api('/runs/' + selectedRun + '/steps/' + key + '/retry', { method: 'POST' });
+    toast('retrying ' + key); setTimeout(loadDetail, 600); }
+  catch (e) { toast('error: ' + e.message); }
+}
+async function retryFlagged() {
+  try { const r = await api('/runs/' + selectedRun + '/retry-flagged', { method: 'POST' });
+    toast('retrying ' + (r.retried || []).length + ' flagged'); setTimeout(loadDetail, 600); }
+  catch (e) { toast('error: ' + e.message); }
+}
+
+$('toggleMode').onclick = async () => {
+  const cur = $('banner').textContent.includes('LIVE') ? 'live' : 'dry';
+  const next = cur === 'live' ? 'dry' : 'live';
+  if (next === 'live' && !confirm('Switch to LIVE? Reversible-write steps will make real changes.')) return;
+  await api('/mode', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: next }) });
+  loadStatus();
+};
+
+$('fire').onclick = async () => {
+  const body = { recipe: $('recipe').value };
+  if ($('clientName').value) body.client = { name: $('clientName').value };
+  if ($('runMode').value) body.mode = $('runMode').value;
+  const ft = parseInt($('failTimes').value, 10);
+  if (ft > 0) body.input = { echo: { root: { failTimes: ft } } };
+  try {
+    const r = await api('/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    selectedRun = r.runId; toast('run created'); loadRuns(); loadDetail();
+  } catch (e) { toast('error: ' + e.message); }
+};
+
+// boot + auto-refresh
+loadRecipes(); loadStatus(); loadRuns();
+setInterval(() => { loadStatus(); loadRuns(); if (selectedRun) loadDetail(); }, 3000);
+</script>
+</body>
+</html>
