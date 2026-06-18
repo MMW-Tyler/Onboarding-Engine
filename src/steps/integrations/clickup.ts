@@ -2,167 +2,91 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { simId, simulated } from './util.js';
+import { profileOf, simId, simulated } from './util.js';
 
 /**
- * ClickUp workers (spec section 08 + section 13: ClickUp mirror).
+ * ClickUp workers (spec section 08 + section 13, one-directional mirror).
  *
- * Two steps:
- *   1. clickup.clone_template  — confirms access to the template list and
- *      records its id on the run as the working list placeholder.
- *   2. clickup.master_tracker  — creates a master tracker task in that list.
+ * Two distinct objects in the real MMW workflow:
+ *  1. clickup.clone_template - DUPLICATE the client template FOLDER for this
+ *     client (POST /space/{spaceId}/folder_template/{templateId}), which clones
+ *     all nested lists/tasks. Stores the new folder id on the run.
+ *  2. clickup.master_tracker - append a task for this client to the existing
+ *     master account tracker LIST (POST /list/{listId}/task), linking the new
+ *     folder so the tracker row points at the client's workspace.
  *
- * ClickUp API v2, base https://api.clickup.com/api/v2.
- * Auth: raw token in `authorization` header (no "Bearer " prefix — ClickUp's
- * own API convention).
- *
- * TODO (spec open item — ClickUp template behavior): Real template cloning
- * requires a target space id (POST /space/{spaceId}/list or
- * POST /folder/{folderId}/list). The space id is not currently stored on the
- * run or surfaced in the dashboard, so clone_template falls back to confirming
- * access to the template list and recording its id. Once the target space id
- * is available in config or on the run, replace the GET probe below with a
- * POST that creates a dedicated client folder/list from the template.
+ * ClickUp auth uses the raw token with NO "Bearer " prefix.
  */
+const CU = 'https://api.clickup.com/api/v2';
 
-const BASE = 'https://api.clickup.com/api/v2';
-
-/** ClickUp uses a raw API token with no "Bearer " prefix. */
 function authHeader(): Record<string, string> {
   return { authorization: config.clickup.apiToken() };
 }
 
-// ---------------------------------------------------------------------------
-// clone_template
-// ---------------------------------------------------------------------------
-
-/**
- * Real: read the template list to confirm connectivity and capture its id.
- * Writes clickup_folder_id (used as the working list id placeholder) to the
- * run row so downstream steps can reference it.
- *
- * TODO: When a target space id becomes available, replace this with a call to
- * POST /space/{spaceId}/list (or POST /folder/{folderId}/list) that creates a
- * real per-client list based on the template.
- */
-async function cloneTemplateReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  const templateListId = config.clickup.templateListId();
-
-  // Confirm we can reach the template list.
-  const res = await callApi<any>(
-    ctx,
-    `${BASE}/list/${templateListId}`,
-    'clickup.get_template_list',
-    { headers: authHeader() },
-  );
-
-  const listId: string = res.body.id ?? templateListId;
-  const taskCount: number = res.body.task_count ?? 0;
-
-  // Persist the template list id as the working clickup_folder_id until real
-  // per-client list creation is implemented (see TODO above).
-  await db()
-    .from('onboarding_runs')
-    .update({ clickup_folder_id: listId, updated_at: new Date().toISOString() })
-    .eq('id', ctx.run.id);
-
-  return { template_list_id: listId, task_count: taskCount };
-}
-
-/**
- * Dry: probe the template list (read-safe) to verify the token and list id,
- * then return a simulated result without writing the run row.
- */
-async function cloneTemplateDry(ctx: StepContext): Promise<Record<string, unknown>> {
-  const templateListId = config.clickup.templateListId();
-
-  // Probe only — confirms the API token and list id are valid.
-  await callApi<any>(
-    ctx,
-    `${BASE}/list/${templateListId}`,
-    'clickup.get_template_list',
-    { headers: authHeader() },
-  );
-
-  return simulated({ list_id: simId('list'), task_count: 0 });
-}
-
-// ---------------------------------------------------------------------------
-// master_tracker
-// ---------------------------------------------------------------------------
-
-/** Display name for the client, falling back to the run id if not set. */
 function clientName(ctx: StepContext): string {
-  return (ctx.run.client_name as string) || ctx.run.id;
+  return (ctx.run.client_name as string) || (profileOf(ctx.run).office_name ?? ctx.run.id);
 }
 
-/**
- * Real: create a master tracker task in the template list (used as the working
- * list until per-client list creation is implemented — see clone_template TODO).
- */
-async function masterTrackerReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  const templateListId = config.clickup.templateListId();
-  const name = clientName(ctx);
-
+// --- clone_template: duplicate the client template folder ---
+async function cloneTemplateReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const spaceId = config.clickup.templateSpaceId();
+  const templateId = config.clickup.folderTemplateId();
   const res = await callApi<any>(
     ctx,
-    `${BASE}/list/${templateListId}/task`,
-    'clickup.create_tracker_task',
-    {
-      method: 'POST',
-      headers: authHeader(),
-      json: {
-        name: `Onboarding — ${name}`,
-        description: `Master tracker task for client onboarding run ${ctx.run.id}.`,
-      },
-    },
+    `${CU}/space/${spaceId}/folder_template/${templateId}`,
+    'clickup.folder_from_template',
+    { method: 'POST', headers: authHeader(), json: { name: clientName(ctx), return_immediately: false } },
   );
-
-  const taskId: string = res.body.id;
-  return { task_id: taskId };
+  const folderId = (res.body?.folder?.id ?? res.body?.id) as string | undefined;
+  if (folderId) {
+    await db().from('onboarding_runs').update({ clickup_folder_id: folderId, updated_at: new Date().toISOString() }).eq('id', ctx.run.id);
+  }
+  return { folder_id: folderId ?? null, name: clientName(ctx) };
+}
+async function cloneTemplateDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  // Read-safe probe: confirm the target space is reachable with this token.
+  await callApi(ctx, `${CU}/space/${config.clickup.templateSpaceId()}`, 'clickup.space.get', { headers: authHeader() });
+  return simulated({ folder_id: simId('folder'), name: clientName(ctx) });
 }
 
-/**
- * Dry: probe the template list to verify connectivity, then return a simulated
- * task id without creating anything in ClickUp.
- */
+// --- master_tracker: append a task to the master account tracker list ---
+function trackerTask(ctx: StepContext): { name: string; description: string } {
+  const p = profileOf(ctx.run);
+  const folderId = ctx.run.clickup_folder_id as string | undefined;
+  const lines = [
+    p.office_name ? `Office: ${p.office_name}` : '',
+    p.package ? `Package: ${p.package}` : '',
+    p.contract_length ? `Contract: ${p.contract_length}` : '',
+    p.start_date ? `Start: ${p.start_date}` : '',
+    p.client_specialty ? `Specialty: ${p.client_specialty}` : '',
+    p.website_url ? `Website: ${p.website_url}` : '',
+    p.nap_phone ? `Phone: ${p.nap_phone}` : '',
+    folderId ? `Client folder: https://app.clickup.com/${config.clickup.teamId()}/v/f/${folderId}` : '',
+    `OnboardEngine run: ${ctx.run.id}`,
+  ].filter(Boolean);
+  return { name: `Onboarding - ${clientName(ctx)}`, description: lines.join('\n') };
+}
+async function masterTrackerReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const listId = config.clickup.masterTrackerListId();
+  const task = trackerTask(ctx);
+  const res = await callApi<any>(ctx, `${CU}/list/${listId}/task`, 'clickup.task.create', {
+    method: 'POST', headers: authHeader(), json: task,
+  });
+  return { task_id: res.body?.id ?? null };
+}
 async function masterTrackerDry(ctx: StepContext): Promise<Record<string, unknown>> {
-  const templateListId = config.clickup.templateListId();
-
-  // Read-safe probe — confirms access before we'd attempt the real POST.
-  await callApi<any>(
-    ctx,
-    `${BASE}/list/${templateListId}`,
-    'clickup.get_template_list',
-    { headers: authHeader() },
-  );
-
+  await callApi(ctx, `${CU}/list/${config.clickup.masterTrackerListId()}`, 'clickup.list.get', { headers: authHeader() });
   return simulated({ task_id: simId('task') });
 }
 
-// ---------------------------------------------------------------------------
-// Exported step array
-// ---------------------------------------------------------------------------
-
 export const clickupSteps: Step[] = [
   {
-    key: 'clickup.clone_template',
-    wave: 1,
-    safetyClass: 'reversible-write',
-    dependsOn: [],
-    maxAttempts: 3,
-    isApplicable: () => true,
-    runReal: cloneTemplateReal,
-    runDry: cloneTemplateDry,
+    key: 'clickup.clone_template', wave: 1, safetyClass: 'reversible-write', dependsOn: [], maxAttempts: 3,
+    isApplicable: () => true, runReal: cloneTemplateReal, runDry: cloneTemplateDry,
   },
   {
-    key: 'clickup.master_tracker',
-    wave: 1,
-    safetyClass: 'reversible-write',
-    dependsOn: ['clickup.clone_template'],
-    maxAttempts: 3,
-    isApplicable: () => true,
-    runReal: masterTrackerReal,
-    runDry: masterTrackerDry,
+    key: 'clickup.master_tracker', wave: 1, safetyClass: 'reversible-write',
+    dependsOn: ['clickup.clone_template', 'profile.normalize_intake'], maxAttempts: 3,
+    isApplicable: () => true, runReal: masterTrackerReal, runDry: masterTrackerDry,
   },
 ];

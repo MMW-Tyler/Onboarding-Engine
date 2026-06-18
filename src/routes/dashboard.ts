@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { getRunMode, setRunMode } from '../config.js';
+import { getRunMode, setRunMode, config } from '../config.js';
 import { recipes } from '../recipes.js';
 
 /**
@@ -13,6 +13,36 @@ export const dashboardRouter = Router();
 /** GET /recipes - recipe names + their step keys, for the trigger panel. */
 dashboardRouter.get('/recipes', (_req, res) => {
   return res.json(recipes);
+});
+
+/**
+ * GET /clickup/discover - read-only helper to find the ClickUp IDs you need:
+ * lists spaces (for CLICKUP_TEMPLATE_SPACE_ID) and folder templates (for
+ * CLICKUP_FOLDER_TEMPLATE_ID). Requires CLICKUP_API_TOKEN + CLICKUP_TEAM_ID.
+ */
+dashboardRouter.get('/clickup/discover', async (_req, res) => {
+  const headers = { authorization: config.clickup.apiToken() };
+  const team = config.clickup.teamId();
+  const get = async (url: string) => {
+    try {
+      const r = await fetch(url, { headers });
+      const t = await r.text();
+      try { return { status: r.status, body: JSON.parse(t) }; } catch { return { status: r.status, body: t }; }
+    } catch (err) {
+      return { status: 0, body: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  const base = 'https://api.clickup.com/api/v2';
+  const [spaces, folderTemplates] = await Promise.all([
+    get(`${base}/team/${team}/space`),
+    get(`${base}/team/${team}/folder_template?page=0`),
+  ]);
+  return res.json({
+    note: 'spaces -> CLICKUP_TEMPLATE_SPACE_ID (id of the space holding client folders); folder_templates -> CLICKUP_FOLDER_TEMPLATE_ID',
+    teamId: team || '(CLICKUP_TEAM_ID not set)',
+    spaces,
+    folder_templates: folderTemplates,
+  });
 });
 
 /** GET /status - current mode + run/step/job counts. */

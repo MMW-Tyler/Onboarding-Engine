@@ -42,8 +42,10 @@ export const config = {
   },
   clickup: {
     apiToken: () => required('CLICKUP_API_TOKEN'),
-    templateListId: () => optional('CLICKUP_TEMPLATE_LIST_ID', '901712755167'),
     teamId: () => optional('CLICKUP_TEAM_ID'),
+    masterTrackerListId: () => required('CLICKUP_MASTER_TRACKER_LIST_ID'),
+    folderTemplateId: () => required('CLICKUP_FOLDER_TEMPLATE_ID'),
+    templateSpaceId: () => required('CLICKUP_TEMPLATE_SPACE_ID'),
   },
   drive: {
     saJson: () => required('GDRIVE_SA_JSON'),

@@ -17,8 +17,6 @@ services:
         value: https://api.sandbox.namecheap.com
       - key: NAMECHEAP_LIVE
         value: "false"
-      - key: CLICKUP_TEMPLATE_LIST_ID
-        value: "901712755167"
       # All secrets below are set in the Render dashboard, never committed.
       - key: SUPABASE_URL
         sync: false
