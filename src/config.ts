@@ -57,6 +57,10 @@ export const config = {
     clientIp: () => required('NAMECHEAP_CLIENT_IP'),
     baseUrl: optional('NAMECHEAP_BASE_URL', 'https://api.sandbox.namecheap.com'),
     live: process.env.NAMECHEAP_LIVE === 'true',
+    // Optional static-IP egress relay (see scripts/namecheap-relay.php). When set,
+    // all Namecheap calls route through it so they leave from a whitelisted IP.
+    relayUrl: () => optional('NAMECHEAP_RELAY_URL'),
+    relaySecret: () => optional('NAMECHEAP_RELAY_SECRET'),
   },
   mailgun: {
     apiKey: () => required('MAILGUN_API_KEY'),

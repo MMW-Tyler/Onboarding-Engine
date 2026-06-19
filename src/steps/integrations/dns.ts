@@ -1,6 +1,6 @@
 import type { Step, StepContext } from '../../types.js';
 import { callApi } from '../../lib/http.js';
-import { config } from '../../config.js';
+import { namecheapUrl } from '../../lib/namecheap.js';
 import { simulated } from './util.js';
 
 /**
@@ -103,26 +103,19 @@ function splitDomain(domain: string): { sld: string; tld: string } {
 function setHostsUrl(domain: string, records: DnsRecord[]): string {
   const { sld, tld } = splitDomain(domain);
 
-  const params: Record<string, string> = {
-    ApiUser: config.namecheap.apiUser(),
-    ApiKey: config.namecheap.apiKey(),
-    UserName: config.namecheap.apiUser(),
-    ClientIp: config.namecheap.clientIp(),
-    Command: 'namecheap.domains.dns.setHosts',
-    SLD: sld,
-    TLD: tld,
-  };
-
+  // Command-specific params only; auth + ClientIp + relay routing are handled by
+  // the shared namecheapUrl helper (src/lib/namecheap.ts).
+  const extra: Record<string, string> = { SLD: sld, TLD: tld };
   records.forEach((rec, i) => {
     const n = String(i + 1);
-    params[`HostName${n}`] = rec.Host;
-    params[`RecordType${n}`] = rec.Type;
-    params[`Address${n}`] = rec.Address;
-    params[`MXPref${n}`] = rec.MXPref !== undefined ? String(rec.MXPref) : '10';
-    params[`TTL${n}`] = rec.TTL !== undefined ? String(rec.TTL) : '1800';
+    extra[`HostName${n}`] = rec.Host;
+    extra[`RecordType${n}`] = rec.Type;
+    extra[`Address${n}`] = rec.Address;
+    extra[`MXPref${n}`] = rec.MXPref !== undefined ? String(rec.MXPref) : '10';
+    extra[`TTL${n}`] = rec.TTL !== undefined ? String(rec.TTL) : '1800';
   });
 
-  return `${config.namecheap.baseUrl}/xml.response?${new URLSearchParams(params).toString()}`;
+  return namecheapUrl('namecheap.domains.dns.setHosts', extra);
 }
 
 // ---------------------------------------------------------------------------

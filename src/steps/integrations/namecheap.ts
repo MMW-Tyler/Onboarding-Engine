@@ -2,6 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
+import { namecheapUrl } from '../../lib/namecheap.js';
 import { profileOf, simulated } from './util.js';
 
 /**
@@ -24,19 +25,11 @@ import { profileOf, simulated } from './util.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Build the full Namecheap API URL for a given command with additional params.
- * Config.namecheap.baseUrl already includes scheme (default: sandbox).
+ * Build the full Namecheap API URL (routes through the static-IP relay when
+ * NAMECHEAP_RELAY_URL is configured - see src/lib/namecheap.ts).
  */
 function ncUrl(command: string, extra: Record<string, string> = {}): string {
-  const params = new URLSearchParams({
-    ApiUser: config.namecheap.apiUser(),
-    ApiKey: config.namecheap.apiKey(),
-    UserName: config.namecheap.apiUser(),
-    ClientIp: config.namecheap.clientIp(),
-    Command: command,
-    ...extra,
-  });
-  return `${config.namecheap.baseUrl}/xml.response?${params.toString()}`;
+  return namecheapUrl(command, extra);
 }
 
 // ---------------------------------------------------------------------------
