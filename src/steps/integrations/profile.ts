@@ -2,6 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { loadPromptSystem } from '../../lib/anthropic.js';
 import { normalizeProfile } from '../../profile/canonical.js';
+import { toHost, looksLikeDomain } from '../../lib/domain.js';
 
 /**
  * profile.normalize_intake / profile.normalize_clientform (spec section 11, Prompts 1-2).
@@ -40,7 +41,11 @@ async function runNormalize(
   if (schema === 'intake') {
     if (profile.office_name) patch.client_name = profile.office_name;
     if (profile.package) patch.package = profile.package;
-    if (profile.website_url) patch.domain = deriveDomain(profile.website_url);
+    // Only set a domain when the website value actually looks like one, so a
+    // client typing "n/a" or leaving junk doesn't poison the domain steps.
+    if (profile.website_url && looksLikeDomain(profile.website_url)) {
+      patch.domain = toHost(profile.website_url);
+    }
   }
   await db().from('onboarding_runs').update(patch).eq('id', ctx.run.id);
 
@@ -51,14 +56,6 @@ async function runNormalize(
     sensitive_keys: Object.keys(sensitive),
     unmapped,
   };
-}
-
-function deriveDomain(url: string): string {
-  return url
-    .replace(/^https?:\/\//i, '')
-    .replace(/^www\./i, '')
-    .split('/')[0]
-    ?.trim() ?? url;
 }
 
 export const profileSteps: Step[] = [

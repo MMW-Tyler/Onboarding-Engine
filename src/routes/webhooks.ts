@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { config } from '../config.js';
 import { db } from '../supabase.js';
 import { createRun, addStepsToRun } from '../engine/runs.js';
+import { toHost, looksLikeDomain } from '../lib/domain.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -20,8 +21,8 @@ function verifySecret(req: { header: (n: string) => string | undefined }): boole
 /** Pull a website-like value out of a raw form payload and reduce it to a host. */
 function domainFromBody(body: Record<string, unknown>): string | null {
   for (const [label, value] of Object.entries(body)) {
-    if (/website|url/i.test(label) && typeof value === 'string' && value.includes('.')) {
-      return value.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0]?.trim() ?? null;
+    if (/website|url/i.test(label) && typeof value === 'string' && looksLikeDomain(value)) {
+      return toHost(value);
     }
   }
   return null;
