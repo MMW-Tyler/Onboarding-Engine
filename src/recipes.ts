@@ -52,6 +52,15 @@ export const recipes: Record<string, string[]> = {
     'warmup.enroll',
   ],
 
+  // Controlled live-test bundle (spec section 16, M3): smallest reversible
+  // write path - create a Slack channel + post to it. Safe to run in live first.
+  slack_only: [
+    'profile.normalize_intake',
+    'slack.create_channel',
+    'slack.post_sale_summary',
+    'slack.post_intake_profile',
+  ],
+
   // Wave 2 (M4 subset): normalize the client form + post the profile to Slack.
   // AI research (gbp/crawl/seo/press/calendar), A2P, Advice Local, rollup: M5.
   wave2_research: ['profile.normalize_clientform', 'slack.post_clientform_profile'],
