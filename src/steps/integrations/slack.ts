@@ -43,18 +43,76 @@ async function channelId(ctx: StepContext): Promise<string> {
   return id;
 }
 
-// --- create_channel ---
+/** Find an existing public channel by name. Walks pages until found or exhausted. */
+async function findChannelByName(ctx: StepContext, name: string): Promise<string | null> {
+  let cursor: string | undefined;
+  for (let i = 0; i < 20; i++) { // safety bound; ~20k channels max
+    const url =
+      `${SLACK}/conversations.list?exclude_archived=true&limit=1000&types=public_channel` +
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+    const res = await callApi<any>(ctx, url, 'slack.conversations.list', { method: 'GET', headers: authHeader() });
+    if (!res.body?.ok) throw new Error(`slack.conversations.list: ${res.body?.error ?? 'unknown error'}`);
+    const hit = (res.body.channels as Array<{ id: string; name: string }>).find((c) => c.name === name);
+    if (hit) return hit.id;
+    cursor = res.body.response_metadata?.next_cursor || undefined;
+    if (!cursor) return null;
+  }
+  return null;
+}
+
+/** Public channels can be joined without an invite; safe to call repeatedly. */
+async function joinIfPublic(ctx: StepContext, id: string): Promise<void> {
+  await callApi(ctx, `${SLACK}/conversations.join`, 'slack.conversations.join', {
+    method: 'POST',
+    headers: authHeader(),
+    json: { channel: id },
+  });
+  // Ignore not-ok responses (already in channel, private, etc.); next call will surface real issues.
+}
+
+// --- create_channel (find-or-create) ---
+// Order of preference, given some workspaces block bot channel creation:
+//   1. The run already has slack_channel_id (e.g. Zapier passed it on the webhook).
+//   2. A public channel named client-<slug> already exists; join + use it.
+//   3. Try conversations.create; if the workspace allows it, great.
+//   4. Flag with a clear "please create #client-<slug> and retry" message.
 async function createChannelReal(ctx: StepContext): Promise<Record<string, unknown>> {
   const name = slugifyChannel((ctx.run.client_name as string) || ctx.run.id);
-  const res = await slackPost<any>(ctx, 'conversations.create', { name });
-  const id = res.channel.id as string;
-  await db().from('onboarding_runs').update({ slack_channel_id: id, updated_at: new Date().toISOString() }).eq('id', ctx.run.id);
-  return { channel_id: id, name };
+
+  // 1. Already set (Zapier or previous run).
+  if (ctx.run.slack_channel_id) {
+    await joinIfPublic(ctx, ctx.run.slack_channel_id as string);
+    return { channel_id: ctx.run.slack_channel_id, name, source: 'preset' };
+  }
+
+  // 2. Find an existing channel by name.
+  const existing = await findChannelByName(ctx, name);
+  if (existing) {
+    await joinIfPublic(ctx, existing);
+    await db().from('onboarding_runs').update({ slack_channel_id: existing, updated_at: new Date().toISOString() }).eq('id', ctx.run.id);
+    return { channel_id: existing, name, source: 'found' };
+  }
+
+  // 3. Try to create. Some workspaces restrict this; if so we flag.
+  try {
+    const res = await slackPost<any>(ctx, 'conversations.create', { name });
+    const id = res.channel.id as string;
+    await db().from('onboarding_runs').update({ slack_channel_id: id, updated_at: new Date().toISOString() }).eq('id', ctx.run.id);
+    return { channel_id: id, name, source: 'created' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `slack: no existing channel named #${name} and bot cannot create one (${msg}). ` +
+      `Create #${name} in Slack (or have Zapier do it) and retry this step.`,
+    );
+  }
 }
 async function createChannelDry(ctx: StepContext): Promise<Record<string, unknown>> {
   await authProbe(ctx);
   const name = slugifyChannel((ctx.run.client_name as string) || ctx.run.id);
-  return simulated({ channel_id: simId('C'), name });
+  // Dry-run reports whether the channel would be found vs. created.
+  const existing = await findChannelByName(ctx, name);
+  return simulated({ channel_id: existing ?? simId('C'), name, source: existing ? 'found' : 'would_create_or_flag' });
 }
 
 // --- post_sale_summary ---

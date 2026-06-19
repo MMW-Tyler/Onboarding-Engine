@@ -28,13 +28,31 @@ function domainFromBody(body: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Pull a Slack channel ID Zapier may pass in the intake payload. Matches any
+ *  reasonable label spelling; value must look like a Slack id (C/G + uppercase). */
+function slackChannelFromBody(body: Record<string, unknown>): string | null {
+  for (const [label, value] of Object.entries(body)) {
+    if (!/slack.*(channel|chan).*id|^channel[_ ]?id$/i.test(label)) continue;
+    if (typeof value === 'string' && /^[CG][A-Z0-9]{6,}$/.test(value.trim())) return value.trim();
+  }
+  return null;
+}
+
 webhooksRouter.post('/webhook/intake', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
   try {
     const result = await createRun({ recipe: 'full_onboarding', input: body });
-    console.log(`[webhook] intake -> run ${result.runId} (${result.queued.length} steps queued)`);
-    return res.status(202).json({ accepted: true, runId: result.runId });
+    // If Zapier created the channel first and passed the ID, attach it to the run
+    // so slack.create_channel uses it directly (skips lookup + create).
+    const ch = slackChannelFromBody(body);
+    if (ch) {
+      await db().from('onboarding_runs')
+        .update({ slack_channel_id: ch, updated_at: new Date().toISOString() })
+        .eq('id', result.runId);
+    }
+    console.log(`[webhook] intake -> run ${result.runId} (${result.queued.length} steps queued${ch ? `, channel=${ch}` : ''})`);
+    return res.status(202).json({ accepted: true, runId: result.runId, slackChannel: ch });
   } catch (err) {
     return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
