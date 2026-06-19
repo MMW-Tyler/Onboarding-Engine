@@ -45,6 +45,41 @@ dashboardRouter.get('/clickup/discover', async (_req, res) => {
   });
 });
 
+/**
+ * GET /drive/check - diagnose Google Drive service-account auth without exposing
+ * secrets. Reports whether GDRIVE_SA_JSON parses, the client_email (which must be
+ * shared into the Drive parent folder), and the result of a real token exchange.
+ */
+dashboardRouter.get('/drive/check', async (_req, res) => {
+  const out: Record<string, unknown> = {};
+  let creds: any;
+  try {
+    creds = JSON.parse(config.drive.saJson());
+    out.json_parsed = true;
+    out.client_email = creds.client_email ?? null;
+    out.project_id = creds.project_id ?? null;
+    out.private_key_present = typeof creds.private_key === 'string';
+    out.private_key_looks_pem = typeof creds.private_key === 'string' && creds.private_key.includes('BEGIN PRIVATE KEY');
+    out.parent_folder_id = config.drive.parentFolderId();
+  } catch (err) {
+    return res.json({ json_parsed: false, error: err instanceof Error ? err.message : String(err) });
+  }
+  try {
+    const { google } = await import('googleapis');
+    const auth = new google.auth.JWT({
+      email: creds.client_email,
+      key: creds.private_key,
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    await auth.authorize();
+    out.authorize = 'ok';
+  } catch (err) {
+    out.authorize = 'failed';
+    out.authorize_error = err instanceof Error ? err.message : String(err);
+  }
+  return res.json(out);
+});
+
 /** GET /status - current mode + run/step/job counts. */
 dashboardRouter.get('/status', async (_req, res) => {
   const [steps, jobs] = await Promise.all([

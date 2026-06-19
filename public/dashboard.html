@@ -81,12 +81,16 @@
     <select id="recipe"></select>
     <label>Client name</label>
     <input id="clientName" placeholder="Test Co" />
+    <label>Website URL (sets the domain for DNS/Namecheap/Warmup)</label>
+    <input id="website" placeholder="https://example.com" />
     <label>Mode for this run</label>
     <select id="runMode">
       <option value="">(use global)</option>
       <option value="dry">dry</option>
       <option value="live">live</option>
     </select>
+    <label>Intake JSON (advanced — overrides name/website)</label>
+    <textarea id="intakeJson" rows="3" placeholder='{"Name Of Office":"...","Website URL":"..."}' style="width:100%;font-family:inherit;font-size:12px;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:7px 9px;"></textarea>
     <label>echo demo: fail echo.root N times (try 3+ to see flagged)</label>
     <input id="failTimes" type="number" min="0" placeholder="0" />
     <div style="margin-top:14px;">
@@ -222,6 +226,19 @@ $('fire').onclick = async () => {
   const body = { recipe: $('recipe').value };
   if ($('clientName').value) body.client = { name: $('clientName').value };
   if ($('runMode').value) body.mode = $('runMode').value;
+
+  // Build the intake payload. Advanced JSON wins; otherwise synthesize from the
+  // name + website fields so normalize_intake maps them and sets the domain.
+  const raw = $('intakeJson').value.trim();
+  if (raw) {
+    try { body.input = JSON.parse(raw); }
+    catch { toast('Intake JSON is not valid JSON'); return; }
+  } else {
+    const input = {};
+    if ($('clientName').value) input['Name Of Office'] = $('clientName').value;
+    if ($('website').value) input['Website URL'] = $('website').value;
+    if (Object.keys(input).length) body.input = input;
+  }
   const ft = parseInt($('failTimes').value, 10);
   if (ft > 0) body.input = { echo: { root: { failTimes: ft } } };
   try {
