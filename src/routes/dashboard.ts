@@ -65,13 +65,8 @@ dashboardRouter.get('/drive/check', async (_req, res) => {
     return res.json({ json_parsed: false, error: err instanceof Error ? err.message : String(err) });
   }
   try {
-    const { google } = await import('googleapis');
-    const auth = new google.auth.JWT({
-      email: creds.client_email,
-      key: creds.private_key,
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    });
-    await auth.authorize();
+    const { getGoogleAccessToken } = await import('../lib/google.js');
+    await getGoogleAccessToken(config.drive.saJson());
     out.authorize = 'ok';
   } catch (err) {
     out.authorize = 'failed';

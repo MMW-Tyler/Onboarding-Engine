@@ -1,20 +1,22 @@
 import type { Step, StepContext } from '../../types.js';
-import { google } from 'googleapis';
 import { db } from '../../supabase.js';
+import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { simId, simulated } from './util.js';
+import { getGoogleAccessToken } from '../../lib/google.js';
+import { profileOf, simId, simulated } from './util.js';
 
 /**
  * Google Drive worker (spec section 08: drive.create_folders).
- * Creates a root client folder under the configured parent, then creates a
- * standard set of numbered subfolders inside it.
+ * Creates a root client folder under the configured parent, then a standard set
+ * of numbered subfolders inside it.
+ *
+ * Auth is done via src/lib/google.ts (hand-rolled JWT exchange) to avoid the
+ * googleapis/gtoken "Premature close" transport bug. Drive REST calls go through
+ * the shared callApi helper, so each one is logged to step_events.
  *
  * Open item (spec section 17, item 1): confirm the exact subfolder list against
- * a real client folder structure before going live. The list below is a working
- * draft.
+ * a real client folder before going live. The list below is a working draft.
  */
-
-// Draft subfolder list -- confirm against a live client folder (spec §17 item 1).
 const SUBFOLDERS = [
   '01 Sales & Onboarding',
   '02 Client Profile',
@@ -32,50 +34,36 @@ const SUBFOLDERS = [
 ];
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const FILES_URL = 'https://www.googleapis.com/drive/v3/files';
 
-/** Build an authenticated Drive v3 client from the service-account JSON. */
-function driveClient() {
-  const creds = JSON.parse(config.drive.saJson());
-  const auth = new google.auth.JWT({
-    email: creds.client_email,
-    key: creds.private_key,
-    scopes: ['https://www.googleapis.com/auth/drive'],
+function rootName(ctx: StepContext): string {
+  return (ctx.run.client_name as string) || profileOf(ctx.run).office_name || ctx.run.id;
+}
+
+async function authHeader(): Promise<Record<string, string>> {
+  const token = await getGoogleAccessToken(config.drive.saJson());
+  return { authorization: `Bearer ${token}` };
+}
+
+/** Create one folder and return its id. supportsAllDrives covers shared drives. */
+async function createFolder(ctx: StepContext, headers: Record<string, string>, name: string, parent: string): Promise<string> {
+  const res = await callApi<any>(ctx, `${FILES_URL}?fields=id&supportsAllDrives=true`, 'drive.files.create', {
+    method: 'POST',
+    headers,
+    json: { name, mimeType: FOLDER_MIME, parents: [parent] },
   });
-  return google.drive({ version: 'v3', auth });
+  return res.body?.id as string;
 }
 
 // --- create_folders ---
-
 async function createFoldersReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  const drive = driveClient();
-  const rootName = (ctx.run.client_name as string) || ctx.run.id;
+  const headers = await authHeader();
+  const rootId = await createFolder(ctx, headers, rootName(ctx), config.drive.parentFolderId());
 
-  // Create the root client folder under the shared parent.
-  const rootRes = await drive.files.create({
-    requestBody: {
-      name: rootName,
-      mimeType: FOLDER_MIME,
-      parents: [config.drive.parentFolderId()],
-    },
-    fields: 'id',
-  });
-  const rootId = rootRes.data.id as string;
-  await ctx.logEvent({ level: 'info', endpoint: 'drive.files.create', response_body: { name: rootName, id: rootId } });
-
-  // Create each subfolder inside the root.
   for (const name of SUBFOLDERS) {
-    const res = await drive.files.create({
-      requestBody: {
-        name,
-        mimeType: FOLDER_MIME,
-        parents: [rootId],
-      },
-      fields: 'id',
-    });
-    await ctx.logEvent({ level: 'info', endpoint: 'drive.files.create', response_body: { name, id: res.data.id } });
+    await createFolder(ctx, headers, name, rootId);
   }
 
-  // Persist the root folder id on the run so downstream steps can reference it.
   await db()
     .from('onboarding_runs')
     .update({ drive_root_folder_id: rootId, updated_at: new Date().toISOString() })
@@ -85,15 +73,9 @@ async function createFoldersReal(ctx: StepContext): Promise<Record<string, unkno
 }
 
 async function createFoldersDry(ctx: StepContext): Promise<Record<string, unknown>> {
-  // Validate credentials by attempting a real OAuth token exchange; no files created.
-  const creds = JSON.parse(config.drive.saJson());
-  const auth = new google.auth.JWT({
-    email: creds.client_email,
-    key: creds.private_key,
-    scopes: ['https://www.googleapis.com/auth/drive'],
-  });
+  // Validate credentials with a real token exchange; create nothing.
   try {
-    await auth.authorize();
+    await getGoogleAccessToken(config.drive.saJson());
     await ctx.logEvent({ level: 'info', endpoint: 'drive.auth', response_body: { ok: true } });
   } catch (err) {
     throw new Error(`drive.auth failed: ${err instanceof Error ? err.message : String(err)}`);
