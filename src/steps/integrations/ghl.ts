@@ -43,6 +43,7 @@ function locationPayload(ctx: StepContext): Record<string, unknown> {
     address: p.nap_street,
     city: p.nap_city,
     state: p.nap_state,
+    country: 'US',
     postalCode: p.nap_zip,
     website: p.website_url,
     email: p.doctor_email,
