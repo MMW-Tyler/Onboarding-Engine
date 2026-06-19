@@ -36,6 +36,8 @@ function locationPayload(ctx: StepContext): Record<string, unknown> {
   const p = profileOf(ctx.run);
 
   const payload: Record<string, unknown> = {
+    // companyId (the agency Company ID) is REQUIRED for agency-level creation.
+    companyId: config.ghl.companyId(),
     name: p.office_name || p.client_name || ctx.run.client_name || 'Unknown Client',
     phone: p.nap_phone,
     address: p.nap_street,
@@ -44,6 +46,12 @@ function locationPayload(ctx: StepContext): Record<string, unknown> {
     postalCode: p.nap_zip,
     website: p.website_url,
     email: p.doctor_email,
+    // GHL commonly requires a prospect contact; populate from the doctor.
+    prospectInfo: {
+      firstName: p.doctor_first_name || p.office_name || 'Client',
+      lastName: p.doctor_last_name || 'Onboarding',
+      email: p.doctor_email,
+    },
   };
 
   // Attach snapshot only if the env var is configured; snapshot application may
@@ -57,6 +65,9 @@ function locationPayload(ctx: StepContext): Record<string, unknown> {
 }
 
 async function provisionSubaccountReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  if (!config.ghl.companyId()) {
+    throw new Error('ghl: GHL_COMPANY_ID not set (the agency Company ID is required to create a sub-account)');
+  }
   const headers = ghlHeaders();
   const payload = locationPayload(ctx);
 
@@ -82,9 +93,10 @@ async function provisionSubaccountReal(ctx: StepContext): Promise<Record<string,
 
 async function provisionSubaccountDry(ctx: StepContext): Promise<Record<string, unknown>> {
   // Probe with a read-safe call to validate the API key without creating anything.
-  // TODO: confirm that GET /locations/search?limit=1 is available under the
-  // agency key and does not require a locationId scope; adjust if GHL changes this.
-  await callApi<any>(ctx, `${GHL_BASE}/locations/search?limit=1`, 'ghl.locations.search', {
+  // locations/search is scoped by companyId at the agency level; include it when set.
+  const companyId = config.ghl.companyId();
+  const q = companyId ? `?companyId=${encodeURIComponent(companyId)}&limit=1` : '?limit=1';
+  await callApi<any>(ctx, `${GHL_BASE}/locations/search${q}`, 'ghl.locations.search', {
     method: 'GET',
     headers: ghlHeaders(),
   });

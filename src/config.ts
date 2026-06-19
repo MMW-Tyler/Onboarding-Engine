@@ -78,7 +78,10 @@ export const config = {
   },
   ghl: {
     apiKey: () => required('GHL_API_KEY'),
-    agencyLocationId: () => optional('GHL_AGENCY_LOCATION_ID'),
+    // Agency Company ID - required by the v2 create-sub-account call (companyId).
+    // (The old GHL_AGENCY_LOCATION_ID name was a misnomer; the agency is a
+    // Company, not a Location.)
+    companyId: () => optional('GHL_COMPANY_ID'),
     snapshotId: () => optional('GHL_SNAPSHOT_ID'),
     a2pFieldMap: () => optional('GHL_A2P_CUSTOM_FIELD_MAP'),
   },
