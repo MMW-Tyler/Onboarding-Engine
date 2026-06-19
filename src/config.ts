@@ -68,7 +68,13 @@ export const config = {
   },
   warmup: {
     apiKey: () => required('WARMUPINBOX_API_KEY'),
-    defaultPlan: () => optional('WARMUPINBOX_DEFAULT_PLAN', 'basic'),
+    // The fixed pool of already-warmed inboxes that client domains rotate across.
+    // Comma-separated emails, e.g. "a@gmail.com,b@gmail.com".
+    rotationInboxes: () =>
+      optional('WARMUPINBOX_ROTATION_INBOXES')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
   },
   ghl: {
     apiKey: () => required('GHL_API_KEY'),
