@@ -68,6 +68,7 @@ export const config = {
   },
   warmup: {
     apiKey: () => required('WARMUPINBOX_API_KEY'),
+    defaultPlan: () => optional('WARMUPINBOX_DEFAULT_PLAN', 'basic'),
   },
   ghl: {
     apiKey: () => required('GHL_API_KEY'),
