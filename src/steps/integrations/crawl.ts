@@ -93,6 +93,86 @@ function siteUrl(ctx: StepContext): string | null {
   return `https://${host}`;
 }
 
+/**
+ * WordPress page-builder / theme-framework fingerprints. Only run when the
+ * underlying platform is WordPress. Elementor is MMW's "green light" - flagged
+ * separately so the team can immediately tell take-it-in-house from refer-out.
+ */
+interface BuilderSignature {
+  builder: string;
+  html: RegExp[];
+}
+const WP_BUILDERS: BuilderSignature[] = [
+  {
+    builder: 'Elementor',
+    html: [
+      /elementor-frontend/i,
+      /\/wp-content\/plugins\/elementor\//i,
+      /data-elementor-/i,
+      /<meta[^>]+generator[^>]+Elementor/i,
+      /\belementor-pro\b/i,
+    ],
+  },
+  {
+    builder: 'Divi',
+    html: [/\/themes\/Divi\//i, /et_pb_/i, /et-builder/i, /<body[^>]+et_pb_pagebuilder/i],
+  },
+  {
+    builder: 'Beaver Builder',
+    html: [/fl-builder/i, /\/wp-content\/plugins\/bb-plugin\//i, /\/themes\/bb-theme\//i],
+  },
+  {
+    builder: 'WPBakery',
+    html: [/js_composer/i, /\bvc_row\b/i, /\bwpb_animate/i],
+  },
+  {
+    builder: 'Oxygen',
+    html: [/ct-section|ct-div-block|oxy-/i, /\/wp-content\/plugins\/oxygen\//i],
+  },
+  {
+    builder: 'Bricks',
+    html: [/brxe-|brx-container|bricks-builder/i, /\/themes\/bricks\//i],
+  },
+  {
+    builder: 'Breakdance',
+    html: [/breakdance-|\/wp-content\/plugins\/breakdance\//i],
+  },
+  {
+    builder: 'Gutenberg / Block Theme',
+    html: [/wp-block-/i, /\/themes\/twenty(?:twenty|twentyone|twentytwo|twentythree|twentyfour|twentyfive)/i],
+  },
+  {
+    builder: 'Astra',
+    html: [/\/themes\/astra\//i, /astra-/i],
+  },
+  {
+    builder: 'GeneratePress',
+    html: [/\/themes\/generatepress\//i, /\bgeneratepress\b/i],
+  },
+  {
+    builder: 'Kadence',
+    html: [/\/themes\/kadence\//i, /\bkadence-/i],
+  },
+  {
+    builder: 'OceanWP',
+    html: [/\/themes\/oceanwp\//i, /\boceanwp-/i],
+  },
+];
+
+/** Find the WP theme slug from the homepage HTML, when one is exposed. */
+function detectWpTheme(html: string): string | null {
+  const m = html.match(/\/wp-content\/themes\/([a-zA-Z0-9_\-]+)\//);
+  return m?.[1] ?? null;
+}
+
+/** Match every WP builder whose signature appears; returns names ordered by hit count. */
+function detectWpBuilders(html: string): { builder: string; hits: number }[] {
+  return WP_BUILDERS.map((b) => {
+    const hits = b.html.reduce((n, re) => (re.test(html) ? n + 1 : n), 0);
+    return { builder: b.builder, hits };
+  }).filter((b) => b.hits > 0).sort((a, b) => b.hits - a.hits);
+}
+
 async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>> {
   const url = siteUrl(ctx);
   if (!url) {
@@ -143,10 +223,36 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     await ctx.logEvent({ level: 'warn', endpoint: 'crawl.detect_platform', parsed_error: `intake said "${claimed}" but site looks like ${platform}` });
   }
 
+  // For WordPress, identify the page builder / theme framework. Elementor is
+  // MMW's "green light" - flagged separately so the team knows immediately
+  // whether they can take the build in-house.
+  let wpBuilders: { builder: string; hits: number }[] = [];
+  let wpTheme: string | null = null;
+  let mmwReady: boolean | null = null;
+  if (platform === 'WordPress') {
+    wpBuilders = detectWpBuilders(html);
+    wpTheme = detectWpTheme(html);
+    const builderName = wpBuilders[0]?.builder ?? null;
+    mmwReady = builderName === 'Elementor';
+    if (!mmwReady) {
+      await ctx.logEvent({
+        level: 'warn',
+        endpoint: 'crawl.detect_platform',
+        parsed_error: `WordPress site is ${builderName ?? 'unknown builder'} (not Elementor) - review before taking in-house`,
+      });
+    }
+  }
+
   // Record the detection on the run profile (non-sensitive).
   const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
+  const update: Record<string, unknown> = { detected_platform: platform };
+  if (platform === 'WordPress') {
+    if (wpBuilders[0]) update.detected_wp_builder = wpBuilders[0].builder;
+    if (wpTheme) update.detected_wp_theme = wpTheme;
+    if (mmwReady !== null) update.mmw_take_in_house = mmwReady;
+  }
   await db().from('onboarding_runs')
-    .update({ client_profile_json: { ...existing, detected_platform: platform }, updated_at: new Date().toISOString() })
+    .update({ client_profile_json: { ...existing, ...update }, updated_at: new Date().toISOString() })
     .eq('id', ctx.run.id);
 
   return {
@@ -154,6 +260,10 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     confidence,
     reachable: true,
     final_url: finalUrl,
+    wp_builder: wpBuilders[0]?.builder ?? null,
+    wp_theme: wpTheme,
+    mmw_take_in_house: mmwReady,
+    other_builder_candidates: wpBuilders.slice(1, 4),
     claimed_intake_type: claimed || null,
     matches_intake: matchesIntake,
     candidates: scores.slice(0, 3),
