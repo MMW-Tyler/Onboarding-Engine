@@ -14,6 +14,7 @@ export const recipes: Record<string, string[]> = {
   // Wave 1: standard new client via the Sales Intake form
   full_onboarding: [
     'profile.normalize_intake',
+    'crawl.detect_platform',
     'slack.create_channel',
     'slack.post_sale_summary',
     'slack.post_intake_profile',

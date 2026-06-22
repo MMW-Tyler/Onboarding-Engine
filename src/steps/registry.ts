@@ -10,6 +10,7 @@ import { dnsSteps } from './integrations/dns.js';
 import { mailgunSteps } from './integrations/mailgun.js';
 import { warmupSteps } from './integrations/warmup.js';
 import { ghlSteps } from './integrations/ghl.js';
+import { crawlSteps } from './integrations/crawl.js';
 import { phase0Steps } from './integrations/phase0.js';
 
 /**
@@ -51,6 +52,7 @@ const ALL: Step[][] = [
   mailgunSteps,
   warmupSteps,
   ghlSteps,
+  crawlSteps,
   phase0Steps,
 ];
 for (const group of ALL) for (const s of group) register(s);

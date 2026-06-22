@@ -25,6 +25,7 @@ export const phase0Steps: Step[] = [
     safetyClass: 'read-safe',
     dependsOn: [
       'profile.normalize_intake',
+      'crawl.detect_platform',
       'slack.create_channel',
       'slack.post_sale_summary',
       'slack.post_intake_profile',
