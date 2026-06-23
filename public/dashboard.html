@@ -70,6 +70,8 @@
   <h1>MMW OnboardEngine</h1>
   <span id="banner" class="mode-banner mode-dry">MODE: DRY</span>
   <button id="toggleMode">Toggle dry/live</button>
+  <button id="editPinned" title="Steps that always run dry, even in live mode">Pinned dry</button>
+  <span id="pinnedSummary" style="color:var(--muted);font-size:11px;"></span>
   <span id="counts" style="margin-left:auto;color:var(--muted);font-size:12px;"></span>
 </header>
 
@@ -136,8 +138,30 @@ async function loadStatus() {
     b.className = 'mode-banner ' + (live ? 'mode-live' : 'mode-dry');
     const fmt = (o) => Object.entries(o).map(([k, v]) => k + ':' + v).join('  ') || '—';
     $('counts').textContent = 'steps  ' + fmt(s.steps) + '     jobs  ' + fmt(s.jobs);
+    const pinned = s.pinned_dry || [];
+    $('pinnedSummary').textContent = pinned.length
+      ? pinned.length + ' step' + (pinned.length === 1 ? '' : 's') + ' pinned dry'
+      : '';
+    window.__pinnedDry = pinned;
   } catch (e) { $('counts').textContent = 'status error: ' + e.message; }
 }
+
+$('editPinned').onclick = async () => {
+  const current = (window.__pinnedDry || []).join(',');
+  const next = prompt(
+    'Comma-separated step keys to ALWAYS run dry (even in live mode).\n' +
+    'Common: namecheap.purchase_domain,dns.ghl_records,dns.mailgun_records,mailgun.add_domain,warmup.enroll\n' +
+    'Empty = nothing pinned.',
+    current,
+  );
+  if (next === null) return;
+  const keys = next.split(',').map((s) => s.trim()).filter(Boolean);
+  try {
+    await api('/pinned-dry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keys }) });
+    toast(keys.length ? keys.length + ' steps pinned dry' : 'no steps pinned dry');
+    loadStatus();
+  } catch (e) { toast('error: ' + e.message); }
+};
 
 async function loadRecipes() {
   recipes = await api('/recipes');

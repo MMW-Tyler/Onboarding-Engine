@@ -4,7 +4,7 @@ import { redact } from '../redact.js';
 import { backoffMs, defaultProfileFor } from './retry.js';
 import { loadStep, promoteDependents } from './runs.js';
 import { alertFlagged } from '../alerts.js';
-import { getRunMode } from '../config.js';
+import { getRunMode, isDryOverridden } from '../config.js';
 import { config } from '../config.js';
 import type { OnboardingRun, RunStep, StepContext, StepEventInput, StepStatus } from '../types.js';
 
@@ -76,7 +76,17 @@ export async function processJob(job: JobRow): Promise<void> {
   const logEvent = makeLogger(run.id, stepRow.step_key, attempt, mode);
   const ctx: StepContext = { run, step: { ...stepRow, attempts: attempt }, mode, attempt, logEvent };
 
-  await logEvent({ level: 'info', endpoint: `runner://${stepRow.step_key}`, request: { mode, attempt, class: stepDef.safetyClass } });
+  // Pinned-dry override: even in live mode, some step keys (e.g. the domain
+  // stack: namecheap/dns/mailgun/warmup) can be forced to dry via env or the
+  // dashboard. Lets the team go live for everything else while keeping the
+  // money/downstream-of-money steps simulated until they're explicitly ready.
+  const pinnedDry = isDryOverridden(stepRow.step_key);
+  const effectiveMode = pinnedDry ? 'dry' : mode;
+  await logEvent({
+    level: 'info',
+    endpoint: `runner://${stepRow.step_key}`,
+    request: { mode: effectiveMode, attempt, class: stepDef.safetyClass, ...(pinnedDry && mode === 'live' ? { pinned_dry: true } : {}) },
+  });
 
   // 5. Pick the execution path by mode + safety class (spec section 09, step 5).
   const started = Date.now();
@@ -87,7 +97,7 @@ export async function processJob(job: JobRow): Promise<void> {
     if (stepDef.safetyClass === 'read-safe') {
       output = await stepDef.runReal(ctx);          // runs for real in both modes
       finalStatus = 'succeeded';
-    } else if (mode === 'dry') {
+    } else if (effectiveMode === 'dry') {
       output = await stepDef.runDry(ctx);            // probe + simulate
       finalStatus = 'simulated';
     } else if (stepDef.safetyClass === 'costly') {

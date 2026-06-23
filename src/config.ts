@@ -22,6 +22,17 @@ function optional(name: string, fallback = ''): string {
 
 let runMode: RunMode = (process.env.RUN_MODE === 'live' ? 'live' : 'dry');
 
+/**
+ * Step keys that always run their dry path, even when the run mode is live.
+ * Lets you go live for everything cheap and reversible while keeping the costly
+ * or downstream-of-cost steps pinned to simulated. Comma-separated env var.
+ */
+let dryOverride = new Set(parseList(process.env.STEP_DRY_OVERRIDE));
+
+function parseList(raw: string | undefined): string[] {
+  return (raw ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 10000),
   webhookSecret: optional('MMW_WEBHOOK_SECRET'),
@@ -104,4 +115,18 @@ export function getRunMode(): RunMode {
 /** Dashboard toggle (spec section 04). Process-local; persists for the life of the service. */
 export function setRunMode(mode: RunMode): void {
   runMode = mode;
+}
+
+/** Step keys that should always run as dry, regardless of run mode. */
+export function getDryOverride(): string[] {
+  return [...dryOverride];
+}
+
+/** Replace the dry-override list (dashboard control). */
+export function setDryOverride(keys: string[]): void {
+  dryOverride = new Set(keys);
+}
+
+export function isDryOverridden(stepKey: string): boolean {
+  return dryOverride.has(stepKey);
 }

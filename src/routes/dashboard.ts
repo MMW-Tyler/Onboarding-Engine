@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { getRunMode, setRunMode, config } from '../config.js';
+import { getRunMode, setRunMode, getDryOverride, setDryOverride, config } from '../config.js';
 import { recipes } from '../recipes.js';
 
 /**
@@ -75,7 +75,7 @@ dashboardRouter.get('/drive/check', async (_req, res) => {
   return res.json(out);
 });
 
-/** GET /status - current mode + run/step/job counts. */
+/** GET /status - current mode + run/step/job counts + dry-pinned step keys. */
 dashboardRouter.get('/status', async (_req, res) => {
   const [steps, jobs] = await Promise.all([
     db().from('run_steps').select('status'),
@@ -83,6 +83,7 @@ dashboardRouter.get('/status', async (_req, res) => {
   ]);
   return res.json({
     mode: getRunMode(),
+    pinned_dry: getDryOverride(),
     steps: tally((steps.data ?? []).map((r) => r.status as string)),
     jobs: tally((jobs.data ?? []).map((r) => r.status as string)),
   });
@@ -95,6 +96,15 @@ dashboardRouter.post('/mode', (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'mode must be dry|live' });
   setRunMode(parsed.data.mode);
   return res.json({ mode: getRunMode() });
+});
+
+/** POST /pinned-dry { keys: string[] } - replace the dry-override list at runtime. */
+const pinnedDrySchema = z.object({ keys: z.array(z.string()) });
+dashboardRouter.post('/pinned-dry', (req, res) => {
+  const parsed = pinnedDrySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'keys must be string[]' });
+  setDryOverride(parsed.data.keys);
+  return res.json({ pinned_dry: getDryOverride() });
 });
 
 function tally(values: string[]): Record<string, number> {
