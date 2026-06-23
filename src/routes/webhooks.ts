@@ -29,11 +29,15 @@ function domainFromBody(body: Record<string, unknown>): string | null {
 }
 
 /** Pull a Slack channel ID Zapier may pass in the intake payload. Matches any
- *  reasonable label spelling; value must look like a Slack id (C/G + uppercase). */
+ *  reasonable label spelling. Slack real IDs are C/G + uppercase, but Zapier
+ *  test data sometimes substitutes other formats - accept any plausible ID
+ *  (>= 6 alphanumeric chars) and let the Slack API itself reject if it's bad. */
 function slackChannelFromBody(body: Record<string, unknown>): string | null {
   for (const [label, value] of Object.entries(body)) {
     if (!/slack.*(channel|chan).*id|^channel[_ ]?id$/i.test(label)) continue;
-    if (typeof value === 'string' && /^[CG][A-Z0-9]{6,}$/.test(value.trim())) return value.trim();
+    if (typeof value !== 'string') continue;
+    const v = value.trim();
+    if (/^[A-Z0-9]{6,}$/i.test(v)) return v;
   }
   return null;
 }
