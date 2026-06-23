@@ -62,9 +62,22 @@ export const recipes: Record<string, string[]> = {
     'slack.post_intake_profile',
   ],
 
-  // Wave 2 (M4 subset): normalize the client form + post the profile to Slack.
-  // AI research (gbp/crawl/seo/press/calendar), A2P, Advice Local, rollup: M5.
-  wave2_research: ['profile.normalize_clientform', 'slack.post_clientform_profile'],
+  // Wave 2 (M5): client-form normalization + AI research drafts + listings/A2P + rollup.
+  // Normally attached to the Wave 1 run by the clientform webhook (so it reuses
+  // the Slack channel + phase0 gate + GHL location); listed here for manual runs.
+  wave2_research: [
+    'profile.normalize_clientform',
+    'slack.post_clientform_profile',
+    'gbp.optimize_plan',
+    'crawl.site_report',
+    'dataforseo.pull',
+    'seo.roadmap',
+    'research.press_topics',
+    'research.content_calendar',
+    'advicelocal.listings',
+    'ghl.a2p_registration',
+    'wave2.rollup',
+  ],
 };
 
 export function recipeSteps(recipe: string): string[] | undefined {

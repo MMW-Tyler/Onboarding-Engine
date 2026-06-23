@@ -99,8 +99,19 @@ curl localhost:10000/status               # mode + step/job tallies
   sensitive fields (NPI/DEA/license/credentials) routed to a restricted bucket
   and redacted on all API output; Slack channel + profile post + pinned
   client-profile.json. Run all in dry-run to validate, then flip `RUN_MODE=live`.
-- M5 — Wave 2 AI (Prompts 3–6: GBP/crawl/SEO/press/calendar), A2P, Advice Local,
-  rollup; Namecheap live behind the two-key unlock. **Next.**
+- **M5 — Wave 2 AI + research: implemented.** Prompts 3–6 (GBP optimization plan,
+  crawl→brand/SEO report, SEO roadmap, press topics + content calendar) as DRAFTs;
+  Google Places + multi-page crawl + DataForSEO inputs; Advice Local listings;
+  GHL A2P registration (stub pending snapshot field map); wave2.rollup posts a
+  review summary to Slack. Wave 2 is attached to the Wave 1 run by the clientform
+  webhook (reuses channel + phase0 gate + GHL location). Namecheap live still
+  behind the two-key unlock; the domain/email stack can be pinned dry in live via
+  STEP_DRY_OVERRIDE.
+
+The dashboard is styled to the MMW aesthetic (Fraunces / Space Mono / Newsreader,
+cream-paper palette). Several M5 external calls (DataForSEO, Advice Local, GHL
+A2P, Google Places) are best-effort vs documented APIs and carry TODO/verify
+markers — validate in dry-run, then one controlled live test each.
 
 > Live API calls for non-Slack integrations were written against documented APIs
 > but are **unverified** until exercised with real credentials. Workers carry

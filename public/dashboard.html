@@ -3,76 +3,104 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>OnboardEngine Dashboard</title>
+<title>MMW OnboardEngine</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Newsreader:opsz@6..72&display=swap');
   :root {
-    --bg:#11140f; --panel:#1b1f17; --panel2:#232820; --line:#33392c;
-    --ink:#ece7d8; --muted:#9a9684; --accent:#c2410c; --accent2:#1d4d3e;
-    --green:#3f9d52; --blue:#3b82c4; --amber:#d99a2b; --red:#c0392b; --grey:#6b6f60;
+    --ink:#11140f; --paper:#f4f1e8; --paper-2:#ece7d8; --paper-3:#e3ddcb;
+    --line:#11140f; --line-soft:rgba(17,20,15,.16);
+    --accent:#c2410c; --accent-2:#1d4d3e; --muted:#5c5847;
+    --green:#1d6b4e; --blue:#2b5f86; --amber:#b45309; --red:#b91c1c; --grey:#8a8674;
+    --mono:'Space Mono',ui-monospace,Menlo,monospace;
+    --serif:'Newsreader',Georgia,serif;
+    --display:'Fraunces',Georgia,serif;
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14px; }
-  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
-    border-bottom:2px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
-  header h1 { font-size:17px; margin:0; letter-spacing:.04em; }
-  .mode-banner { font-weight:700; letter-spacing:.12em; padding:5px 14px; border-radius:4px; }
-  .mode-dry { background:var(--accent2); color:#dff5ec; }
+  body { margin:0; color:var(--ink); background:var(--paper);
+    background-image:radial-gradient(circle at 12% 6%, rgba(194,65,12,.06), transparent 42%),
+                     radial-gradient(circle at 88% 70%, rgba(29,77,62,.06), transparent 42%);
+    font-family:var(--serif); font-size:15px; line-height:1.5; }
+
+  /* Masthead */
+  header { display:flex; align-items:center; gap:18px; padding:14px 26px;
+    border-bottom:3px solid var(--line); background:var(--paper-2); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  .brand .kicker { font-family:var(--mono); font-size:10px; letter-spacing:.3em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  .brand h1 { font-family:var(--display); font-weight:900; font-size:24px; line-height:.9; margin:2px 0 0; letter-spacing:-.01em; }
+  .mode-banner { font-family:var(--mono); font-weight:700; font-size:12px; letter-spacing:.14em; padding:6px 14px; border:2px solid var(--line); }
+  .mode-dry { background:var(--accent-2); color:#eef6f1; }
   .mode-live { background:var(--red); color:#fff; }
-  button { font-family:inherit; font-size:13px; cursor:pointer; border:1px solid var(--line);
-    background:var(--panel2); color:var(--ink); padding:6px 12px; border-radius:4px; }
-  button:hover { border-color:var(--accent); }
+  #counts { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:.04em; text-align:right; }
+  #pinnedSummary { font-family:var(--mono); font-size:11px; color:var(--accent); letter-spacing:.04em; }
+
+  button { font-family:var(--mono); font-size:12px; cursor:pointer; border:2px solid var(--line);
+    background:var(--paper); color:var(--ink); padding:6px 13px; transition:all .12s; }
+  button:hover { background:var(--ink); color:var(--paper); }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.tiny { padding:2px 8px; font-size:11px; }
-  .wrap { display:grid; grid-template-columns:320px 1fr; gap:0; min-height:calc(100vh - 55px); }
-  .col { padding:18px 22px; }
-  .left { border-right:2px solid var(--line); background:var(--panel); }
-  h2 { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent);
-    margin:0 0 12px; }
-  label { display:block; font-size:11px; color:var(--muted); margin:12px 0 4px; letter-spacing:.06em; text-transform:uppercase; }
-  input, select { width:100%; font-family:inherit; font-size:13px; background:var(--panel2);
-    color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:7px 9px; }
-  .run-card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:8px 0;
-    cursor:pointer; background:var(--panel2); }
-  .run-card:hover { border-color:var(--accent); }
-  .run-card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
-  .run-card .meta { font-size:11px; color:var(--muted); margin-top:4px; }
-  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 22px; }
-  .chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:5px 10px;
-    border-radius:4px; border:1px solid var(--line); }
-  .chip .dot { width:9px; height:9px; border-radius:50%; }
-  .s-succeeded { background:rgba(63,157,82,.16); } .s-succeeded .dot { background:var(--green); }
-  .s-simulated { background:rgba(59,130,196,.16); } .s-simulated .dot { background:var(--blue); }
-  .s-running   { background:rgba(217,154,43,.16); } .s-running .dot { background:var(--amber); animation:pulse 1.2s infinite; }
-  .s-blocked   { background:rgba(217,154,43,.10); } .s-blocked .dot { background:var(--amber); }
-  .s-flagged   { background:rgba(192,57,43,.18); }  .s-flagged .dot { background:var(--red); }
-  .s-failed    { background:rgba(192,57,43,.18); }  .s-failed .dot { background:var(--red); }
-  .s-skipped   { background:rgba(107,111,96,.16); } .s-skipped .dot { background:var(--grey); }
-  .s-pending   { background:rgba(107,111,96,.08); } .s-pending .dot { background:var(--grey); }
+  button.primary:hover { background:#a8380a; }
+  button.tiny { padding:2px 9px; font-size:10px; letter-spacing:.05em; }
+
+  .wrap { display:grid; grid-template-columns:340px 1fr; min-height:calc(100vh - 60px); }
+  .col { padding:22px 26px; }
+  .left { border-right:3px solid var(--line); background:var(--paper-2); }
+
+  h2 { font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent-2);
+    font-weight:700; margin:0 0 14px; padding-bottom:6px; border-bottom:1px solid var(--line-soft); }
+  label { display:block; font-family:var(--mono); font-size:10px; color:var(--muted); margin:14px 0 5px; letter-spacing:.08em; text-transform:uppercase; }
+  input, select, textarea { width:100%; font-family:var(--mono); font-size:13px; background:var(--paper);
+    color:var(--ink); border:2px solid var(--line); border-radius:0; padding:8px 10px; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+
+  .run-card { border:2px solid var(--line); padding:11px 13px; margin:9px 0; cursor:pointer; background:var(--paper);
+    transition:all .12s; }
+  .run-card:hover { background:var(--paper-3); }
+  .run-card.sel { border-color:var(--accent); box-shadow:4px 4px 0 rgba(194,65,12,.18); }
+  .run-card b { font-family:var(--display); font-weight:600; font-size:16px; }
+  .run-card .meta { font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:4px; letter-spacing:.03em; }
+
+  .detail-head { font-family:var(--display); font-weight:900; font-size:26px; margin:0; line-height:1; }
+  .chips { display:flex; flex-wrap:wrap; gap:7px; margin:16px 0 24px; }
+  .chip { display:inline-flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11px; padding:6px 11px;
+    border:1.5px solid var(--line); background:var(--paper); }
+  .chip .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .s-succeeded { background:rgba(29,107,78,.12); } .s-succeeded .dot { background:var(--green); }
+  .s-simulated { background:rgba(43,95,134,.12); } .s-simulated .dot { background:var(--blue); }
+  .s-running   { background:rgba(180,83,9,.14); }  .s-running .dot { background:var(--amber); animation:pulse 1.2s infinite; }
+  .s-blocked   { background:rgba(180,83,9,.08); }  .s-blocked .dot { background:var(--amber); }
+  .s-flagged   { background:rgba(185,28,28,.14); } .s-flagged .dot { background:var(--red); }
+  .s-failed    { background:rgba(185,28,28,.14); } .s-failed .dot { background:var(--red); }
+  .s-skipped   { background:rgba(138,134,116,.14); } .s-skipped .dot { background:var(--grey); }
+  .s-pending   { background:rgba(138,134,116,.07); } .s-pending .dot { background:var(--grey); }
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
-  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
-  th { text-align:left; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line);
-    padding:6px 8px; text-transform:uppercase; letter-spacing:.06em; font-size:10px; }
-  td { padding:6px 8px; border-bottom:1px solid rgba(51,57,44,.5); vertical-align:top; }
-  td.lvl-error { color:#e8857a; } td.lvl-warn { color:var(--amber); }
-  .legend { display:flex; flex-wrap:wrap; gap:10px; font-size:11px; color:var(--muted); margin:6px 0 0; }
+
+  .tbl-scroll { overflow-x:auto; border:2px solid var(--line); }
+  table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:11px; min-width:640px; }
+  th { text-align:left; background:var(--ink); color:var(--paper); font-weight:700; padding:8px 10px;
+    text-transform:uppercase; letter-spacing:.08em; font-size:9px; }
+  td { padding:7px 10px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  tr:nth-child(even) td { background:rgba(17,20,15,.025); }
+  td.lvl-error { color:var(--red); font-weight:700; } td.lvl-warn { color:var(--amber); }
+  .legend { display:flex; flex-wrap:wrap; gap:12px; font-family:var(--mono); font-size:10px; color:var(--muted); margin:6px 0 0; text-transform:uppercase; letter-spacing:.05em; }
   .legend span { display:inline-flex; align-items:center; gap:5px; }
   .legend .dot { width:8px; height:8px; border-radius:50%; }
-  .empty { color:var(--muted); font-style:italic; padding:20px 0; }
-  .row-actions { display:flex; gap:8px; align-items:center; margin:0 0 10px; flex-wrap:wrap; }
-  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:11px; color:var(--muted); }
-  .toast { position:fixed; bottom:18px; right:18px; background:var(--panel2); border:1px solid var(--accent);
-    padding:10px 16px; border-radius:6px; font-size:13px; display:none; }
+  .empty { color:var(--muted); font-style:italic; padding:22px 0; }
+  .row-actions { display:flex; gap:10px; align-items:center; margin:0 0 6px; flex-wrap:wrap; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--mono); font-size:10.5px; color:var(--muted); }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--ink); color:var(--paper); border:2px solid var(--accent);
+    padding:11px 18px; font-family:var(--mono); font-size:12px; display:none; box-shadow:5px 5px 0 rgba(17,20,15,.2); }
+  @media(max-width:780px){ .wrap{grid-template-columns:1fr;} .left{border-right:none;border-bottom:3px solid var(--line);} }
 </style>
 </head>
 <body>
 <header>
-  <h1>MMW OnboardEngine</h1>
+  <div class="brand">
+    <div class="kicker">Medical Marketing Whiz</div>
+    <h1>OnboardEngine</h1>
+  </div>
   <span id="banner" class="mode-banner mode-dry">MODE: DRY</span>
-  <button id="toggleMode">Toggle dry/live</button>
+  <button id="toggleMode">Toggle dry / live</button>
   <button id="editPinned" title="Steps that always run dry, even in live mode">Pinned dry</button>
-  <span id="pinnedSummary" style="color:var(--muted);font-size:11px;"></span>
-  <span id="counts" style="margin-left:auto;color:var(--muted);font-size:12px;"></span>
+  <span id="pinnedSummary"></span>
+  <span id="counts"></span>
 </header>
 
 <div class="wrap">
@@ -83,7 +111,7 @@
     <select id="recipe"></select>
     <label>Client name</label>
     <input id="clientName" placeholder="Test Co" />
-    <label>Website URL (sets the domain for DNS/Namecheap/Warmup)</label>
+    <label>Website URL (sets domain for DNS / Namecheap / Warmup)</label>
     <input id="website" placeholder="https://example.com" />
     <label>Mode for this run</label>
     <select id="runMode">
@@ -91,15 +119,15 @@
       <option value="dry">dry</option>
       <option value="live">live</option>
     </select>
-    <label>Intake JSON (advanced — overrides name/website)</label>
-    <textarea id="intakeJson" rows="3" placeholder='{"Name Of Office":"...","Website URL":"..."}' style="width:100%;font-family:inherit;font-size:12px;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:7px 9px;"></textarea>
+    <label>Intake JSON (advanced — overrides name / website)</label>
+    <textarea id="intakeJson" rows="3" placeholder='{"Name Of Office":"...","Website URL":"..."}'></textarea>
     <label>echo demo: fail echo.root N times (try 3+ to see flagged)</label>
     <input id="failTimes" type="number" min="0" placeholder="0" />
-    <div style="margin-top:14px;">
-      <button class="primary" id="fire" style="width:100%;">Fire run</button>
+    <div style="margin-top:16px;">
+      <button class="primary" id="fire" style="width:100%;padding:10px;">Fire run</button>
     </div>
 
-    <h2 style="margin-top:26px;">Runs</h2>
+    <h2 style="margin-top:30px;">Runs</h2>
     <div id="runs"><div class="empty">loading…</div></div>
   </div>
 
@@ -207,13 +235,15 @@ async function loadDetail() {
         ({succeeded:'green',simulated:'blue',running:'amber',blocked:'amber',flagged:'red',skipped:'grey',pending:'grey'})[s] +
         ')"></span>' + s + '</span>').join('');
     let html = '<div class="row-actions">' +
-      '<h2 style="margin:0;">' + (run.client_name || '(no name)') + ' · ' + run.recipe + ' · ' + run.mode + '</h2>' +
+      '<h2 class="detail-head" style="border:none;color:var(--ink);margin:0;">' + (run.client_name || '(no name)') + '</h2>' +
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
+      '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;letter-spacing:.05em;">' +
+      run.recipe + ' · ' + run.mode + '</div>' +
       '<div class="legend">' + legend + '</div>' +
       '<div class="chips">' + steps.map(chip).join('') + '</div>' +
       '<h2>Event / error feed</h2>' +
-      '<table><tr><th>time</th><th>lvl</th><th>step</th><th>att</th><th>endpoint</th><th>status</th><th>detail</th></tr>' +
+      '<div class="tbl-scroll"><table><tr><th>time</th><th>lvl</th><th>step</th><th>att</th><th>endpoint</th><th>status</th><th>detail</th></tr>' +
       events.map((e) =>
         '<tr><td>' + new Date(e.ts).toLocaleTimeString() + '</td>' +
         '<td class="lvl-' + e.level + '">' + e.level + '</td>' +
@@ -221,7 +251,7 @@ async function loadDetail() {
         '<td>' + (e.endpoint || '') + '</td>' +
         '<td>' + (e.response_status || '') + '</td>' +
         '<td><pre>' + (e.parsed_error || JSON.stringify(e.response_body || e.request_redacted || '')) + '</pre></td></tr>'
-      ).join('') + '</table>';
+      ).join('') + '</table></div>';
     $('detail').innerHTML = html;
   } catch (e) { $('detail').innerHTML = '<div class="empty">detail error: ' + e.message + '</div>'; }
 }
@@ -251,8 +281,6 @@ $('fire').onclick = async () => {
   if ($('clientName').value) body.client = { name: $('clientName').value };
   if ($('runMode').value) body.mode = $('runMode').value;
 
-  // Build the intake payload. Advanced JSON wins; otherwise synthesize from the
-  // name + website fields so normalize_intake maps them and sets the domain.
   const raw = $('intakeJson').value.trim();
   if (raw) {
     try { body.input = JSON.parse(raw); }

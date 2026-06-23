@@ -1,4 +1,20 @@
 import type { OnboardingRun } from '../../types.js';
+import { db } from '../../supabase.js';
+
+/** Read another step's output_json + status on the same run (for synthesis steps). */
+export async function siblingOutput(
+  runId: string,
+  stepKey: string,
+): Promise<{ status: string; output: Record<string, unknown> | null } | null> {
+  const { data } = await db()
+    .from('run_steps')
+    .select('status, output_json')
+    .eq('run_id', runId)
+    .eq('step_key', stepKey)
+    .maybeSingle();
+  if (!data) return null;
+  return { status: data.status as string, output: (data.output_json as Record<string, unknown>) ?? null };
+}
 
 /** Non-sensitive client profile for a run. */
 export function profileOf(run: OnboardingRun): Record<string, string> {

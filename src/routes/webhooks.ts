@@ -83,7 +83,19 @@ webhooksRouter.post('/webhook/clientform', async (req, res) => {
 
     if (runId) {
       await db().from('onboarding_runs').update({ raw_clientform_json: body, updated_at: new Date().toISOString() }).eq('id', runId);
-      const added = await addStepsToRun(runId, ['profile.normalize_clientform', 'slack.post_clientform_profile']);
+      const added = await addStepsToRun(runId, [
+        'profile.normalize_clientform',
+        'slack.post_clientform_profile',
+        'gbp.optimize_plan',
+        'crawl.site_report',
+        'dataforseo.pull',
+        'seo.roadmap',
+        'research.press_topics',
+        'research.content_calendar',
+        'advicelocal.listings',
+        'ghl.a2p_registration',
+        'wave2.rollup',
+      ]);
       console.log(`[webhook] clientform -> attached to run ${runId} (${added.length} steps)`);
       return res.status(202).json({ accepted: true, runId, attached: added });
     }
