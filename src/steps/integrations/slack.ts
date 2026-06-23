@@ -43,7 +43,9 @@ async function channelId(ctx: StepContext): Promise<string> {
   return id;
 }
 
-/** Find an existing public channel by name. Walks pages until found or exhausted. */
+/** Find an existing public channel by name. Walks pages until found or exhausted.
+ *  Returns null on missing_scope (channels:read not granted) so the caller can
+ *  fall back to the next strategy without flagging the whole run. */
 async function findChannelByName(ctx: StepContext, name: string): Promise<string | null> {
   let cursor: string | undefined;
   for (let i = 0; i < 20; i++) { // safety bound; ~20k channels max
@@ -51,7 +53,14 @@ async function findChannelByName(ctx: StepContext, name: string): Promise<string
       `${SLACK}/conversations.list?exclude_archived=true&limit=1000&types=public_channel` +
       (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
     const res = await callApi<any>(ctx, url, 'slack.conversations.list', { method: 'GET', headers: authHeader() });
-    if (!res.body?.ok) throw new Error(`slack.conversations.list: ${res.body?.error ?? 'unknown error'}`);
+    if (!res.body?.ok) {
+      // missing_scope: log + skip; caller will try the create path next.
+      if (res.body?.error === 'missing_scope') {
+        await ctx.logEvent({ level: 'warn', endpoint: 'slack.conversations.list', parsed_error: 'channels:read not granted; skipping lookup' });
+        return null;
+      }
+      throw new Error(`slack.conversations.list: ${res.body?.error ?? 'unknown error'}`);
+    }
     const hit = (res.body.channels as Array<{ id: string; name: string }>).find((c) => c.name === name);
     if (hit) return hit.id;
     cursor = res.body.response_metadata?.next_cursor || undefined;
