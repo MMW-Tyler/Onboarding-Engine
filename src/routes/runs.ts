@@ -59,6 +59,26 @@ runsRouter.get('/runs/:id', async (req, res) => {
   });
 });
 
+/** DELETE /runs/:id - permanently remove a run and (via FK cascade) its steps,
+ *  events, and jobs. Use for clearing test runs from the dashboard. */
+runsRouter.delete('/runs/:id', async (req, res) => {
+  const { error } = await db().from('onboarding_runs').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, deleted: req.params.id });
+});
+
+/** POST /runs/delete-all - bulk delete every run. Guarded by ?confirm=YES so a
+ *  stray fetch can't wipe production runs. Use for clearing test data. */
+runsRouter.post('/runs/delete-all', async (req, res) => {
+  if (req.query.confirm !== 'YES') {
+    return res.status(400).json({ error: 'pass ?confirm=YES to confirm bulk delete' });
+  }
+  // Supabase requires a filter on delete; this matches every row.
+  const { error, count } = await db().from('onboarding_runs').delete({ count: 'exact' }).not('id', 'is', null);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, deleted: count ?? 0 });
+});
+
 /** POST /runs/:id/steps/:key/retry - rerun one step (spec section 10). */
 runsRouter.post('/runs/:id/steps/:key/retry', async (req, res) => {
   try {

@@ -127,7 +127,10 @@
       <button class="primary" id="fire" style="width:100%;padding:10px;">Fire run</button>
     </div>
 
-    <h2 style="margin-top:30px;">Runs</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:30px;">
+      <h2 style="margin:0;border:none;padding:0;">Runs</h2>
+      <button class="tiny" id="clearAllRuns" title="Delete every run (cascades steps + events + jobs)">Clear all</button>
+    </div>
     <div id="runs"><div class="empty">loading…</div></div>
   </div>
 
@@ -211,10 +214,23 @@ async function loadRuns() {
     runs.forEach((r) => {
       const d = document.createElement('div');
       d.className = 'run-card' + (r.id === selectedRun ? ' sel' : '');
-      d.innerHTML = '<div><b>' + (r.client_name || '(no name)') + '</b></div>' +
-        '<div class="meta">' + r.recipe + ' · ' + r.mode + ' · ' +
-        new Date(r.created_at).toLocaleTimeString() + '</div>';
-      d.onclick = () => { selectedRun = r.id; loadDetail(); loadRuns(); };
+      d.innerHTML =
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div><b>' + (r.client_name || '(no name)') + '</b></div>' +
+            '<div class="meta">' + r.recipe + ' · ' + r.mode + ' · ' +
+            new Date(r.created_at).toLocaleTimeString() + '</div>' +
+          '</div>' +
+          '<button class="tiny" data-del="' + r.id + '" title="Delete this run" style="flex:none;">✕</button>' +
+        '</div>';
+      d.onclick = (ev) => {
+        if (ev.target && ev.target.dataset && ev.target.dataset.del) {
+          ev.stopPropagation();
+          deleteRun(ev.target.dataset.del, r.client_name);
+          return;
+        }
+        selectedRun = r.id; loadDetail(); loadRuns();
+      };
       el.appendChild(d);
     });
   } catch (e) { $('runs').innerHTML = '<div class="empty">runs error: ' + e.message + '</div>'; }
@@ -267,6 +283,28 @@ async function retryFlagged() {
     toast('retrying ' + (r.retried || []).length + ' flagged'); setTimeout(loadDetail, 600); }
   catch (e) { toast('error: ' + e.message); }
 }
+
+async function deleteRun(id, label) {
+  if (!confirm('Delete this run' + (label ? ' (' + label + ')' : '') + '? This removes its steps, events, and jobs.')) return;
+  try {
+    await api('/runs/' + id, { method: 'DELETE' });
+    if (selectedRun === id) { selectedRun = null; $('detail').innerHTML = '<div class="empty">Select a run, or fire one.</div>'; }
+    toast('deleted');
+    loadRuns(); loadStatus();
+  } catch (e) { toast('error: ' + e.message); }
+}
+
+$('clearAllRuns').onclick = async () => {
+  if (!confirm('Delete EVERY run? This cannot be undone.')) return;
+  if (!confirm('Really clear all runs?')) return;
+  try {
+    const r = await api('/runs/delete-all?confirm=YES', { method: 'POST' });
+    selectedRun = null;
+    $('detail').innerHTML = '<div class="empty">Select a run, or fire one.</div>';
+    toast('deleted ' + r.deleted + ' run' + (r.deleted === 1 ? '' : 's'));
+    loadRuns(); loadStatus();
+  } catch (e) { toast('error: ' + e.message); }
+};
 
 $('toggleMode').onclick = async () => {
   const cur = $('banner').textContent.includes('LIVE') ? 'live' : 'dry';
