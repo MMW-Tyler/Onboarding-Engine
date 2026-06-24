@@ -31,8 +31,27 @@ async function runNormalize(
   // masked by the redaction helper on every API response (key-name based).
   const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
   const existingRestricted = (existing._restricted ?? {}) as Record<string, unknown>;
+  // Wave 1 -> Wave 2 fallbacks: the Sales Intake form doesn't capture
+  // focus_services / geo_targets / ideal_patient / differentiators directly, but
+  // most of those can be inferred well enough for Wave 2 to produce useful
+  // drafts. When the (richer) Client MMW form arrives later, profile.normalize_
+  // clientform overwrites these with the real values. Only synthesize when the
+  // Wave 2 field isn't already on the profile.
+  const fallbacks: Record<string, string> = {};
+  if (schema === 'intake') {
+    const have = (k: string) => Boolean((existing as Record<string, unknown>)[k]) || Boolean(profile[k]);
+    if (!have('focus_services') && profile.client_specialty) {
+      fallbacks.focus_services = profile.client_specialty;
+    }
+    if (!have('geo_targets')) {
+      const parts = [profile.nap_city, profile.nap_state].filter(Boolean);
+      if (parts.length) fallbacks.geo_targets = parts.join(', ');
+    }
+  }
+
   const merged = {
     ...existing,
+    ...fallbacks,
     ...profile,
     _restricted: { ...existingRestricted, ...sensitive },
   };

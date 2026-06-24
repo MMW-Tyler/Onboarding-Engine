@@ -105,7 +105,8 @@ export const adviceLocalSteps: Step[] = [
     key:          'advicelocal.listings',
     wave:         2,
     safetyClass:  'reversible-write',
-    dependsOn:    ['phase0.gate', 'profile.normalize_clientform'],
+    // NAP comes from the Sales Intake form, so no clientform dependency needed.
+    dependsOn:    ['phase0.gate'],
     maxAttempts:  3,
     isApplicable: () => true,
     runReal,

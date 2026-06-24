@@ -186,11 +186,11 @@ function aiStep(key: string, dependsOn: string[], fn: (ctx: StepContext) => Prom
 }
 
 export const wave2Steps: Step[] = [
-  aiStep('gbp.optimize_plan', ['phase0.gate', 'profile.normalize_clientform'], gbpOptimizePlan),
-  aiStep('crawl.site_report', ['phase0.gate', 'profile.normalize_clientform'], crawlSiteReport),
+  aiStep('gbp.optimize_plan', ['phase0.gate'], gbpOptimizePlan),
+  aiStep('crawl.site_report', ['phase0.gate'], crawlSiteReport),
   aiStep('seo.roadmap', ['crawl.site_report', 'dataforseo.pull'], seoRoadmap),
-  aiStep('research.press_topics', ['phase0.gate', 'profile.normalize_clientform'], (ctx) => research(ctx, 'press')),
-  aiStep('research.content_calendar', ['phase0.gate', 'profile.normalize_clientform'], (ctx) => research(ctx, 'calendar')),
+  aiStep('research.press_topics', ['phase0.gate'], (ctx) => research(ctx, 'press')),
+  aiStep('research.content_calendar', ['phase0.gate'], (ctx) => research(ctx, 'calendar')),
   {
     key: 'wave2.rollup', wave: 2, safetyClass: 'reversible-write',
     dependsOn: ['gbp.optimize_plan', 'crawl.site_report', 'seo.roadmap', 'research.press_topics', 'research.content_calendar', 'dataforseo.pull', 'advicelocal.listings', 'ghl.a2p_registration'],

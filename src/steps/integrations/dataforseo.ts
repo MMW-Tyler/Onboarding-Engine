@@ -139,7 +139,10 @@ export const dataforseoSteps: Step[] = [
     key: 'dataforseo.pull',
     wave: 2,
     safetyClass: 'read-safe',
-    dependsOn: ['phase0.gate', 'profile.normalize_clientform'],
+    // Seeds come from focus_services + geo_targets on the run profile. Those
+    // are filled by either profile.normalize_clientform OR the Wave 1 fallbacks
+    // (client_specialty + nap_city/state), so phase0.gate is the only dep.
+    dependsOn: ['phase0.gate'],
     maxAttempts: 3,
     retryProfile: 'standard',
     isApplicable: () => true,
