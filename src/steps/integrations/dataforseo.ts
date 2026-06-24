@@ -139,10 +139,10 @@ export const dataforseoSteps: Step[] = [
     key: 'dataforseo.pull',
     wave: 2,
     safetyClass: 'read-safe',
-    // Seeds come from focus_services + geo_targets on the run profile. Those
-    // are filled by either profile.normalize_clientform OR the Wave 1 fallbacks
-    // (client_specialty + nap_city/state), so phase0.gate is the only dep.
-    dependsOn: ['phase0.gate'],
+    // Seeds come from focus_services + geo_targets, which are filled properly by
+    // the richer Client MMW onboarding form. Gated on profile.normalize_clientform
+    // so this paid pull runs once, on real data, after the second form arrives.
+    dependsOn: ['phase0.gate', 'profile.normalize_clientform'],
     maxAttempts: 3,
     retryProfile: 'standard',
     isApplicable: () => true,

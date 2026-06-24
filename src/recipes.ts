@@ -11,12 +11,11 @@ export const recipes: Record<string, string[]> = {
   // M1 lifecycle test bundle
   echo_demo: ['echo.root', 'echo.child', 'echo.leaf'],
 
-  // Wave 1 + Wave 2 (everything that runs from the Sales Intake form alone).
-  // A2P + Slack clientform-profile post stay in wave2_research because they
-  // genuinely need the Client MMW onboarding form data (10DLC business info,
-  // sensitive client credentials, etc.).
+  // Wave 1: account setup from the Sales Intake form. Runs, completes, and then
+  // HOLDS at phase0 - Wave 2 is added later by the Client MMW onboarding form
+  // webhook (/webhook/clientform), so the AI drafts are generated once, on the
+  // richer onboarding-form data, rather than twice on thin intake data.
   full_onboarding: [
-    // Wave 1
     'profile.normalize_intake',
     'crawl.detect_platform',
     'slack.create_channel',
@@ -33,16 +32,6 @@ export const recipes: Record<string, string[]> = {
     'warmup.enroll',
     'ghl.provision_subaccount',
     'phase0.gate',
-    // Wave 2 (uses Sales Intake fallbacks for focus_services / geo_targets when
-    // the Client MMW form hasn't been submitted yet)
-    'gbp.optimize_plan',
-    'crawl.site_report',
-    'dataforseo.pull',
-    'seo.roadmap',
-    'research.press_topics',
-    'research.content_calendar',
-    'advicelocal.listings',
-    'wave2.rollup',
   ],
 
   // Device-partner client: sending infra, no SEO/research

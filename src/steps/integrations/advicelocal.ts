@@ -105,8 +105,9 @@ export const adviceLocalSteps: Step[] = [
     key:          'advicelocal.listings',
     wave:         2,
     safetyClass:  'reversible-write',
-    // NAP comes from the Sales Intake form, so no clientform dependency needed.
-    dependsOn:    ['phase0.gate'],
+    // Gated on the Client MMW onboarding form so listings are submitted once,
+    // on the confirmed NAP from the richer form, rather than on thin intake data.
+    dependsOn:    ['phase0.gate', 'profile.normalize_clientform'],
     maxAttempts:  3,
     isApplicable: () => true,
     runReal,

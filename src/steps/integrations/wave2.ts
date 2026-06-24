@@ -136,39 +136,104 @@ async function research(ctx: StepContext, deliverable: 'press' | 'calendar'): Pr
   return { deliverable, draft: text };
 }
 
-// --- wave2.rollup: post a review summary to Slack ----------------------------
+// --- wave2.rollup: deliver the drafts to Slack -------------------------------
+// The AI steps that produce a human-readable draft (output_json.draft). These
+// are posted in full as threaded replies under the rollup summary message.
+const DRAFT_STEPS: { key: string; title: string }[] = [
+  { key: 'gbp.optimize_plan',        title: 'Google Business Profile optimization plan' },
+  { key: 'crawl.site_report',        title: 'Website / SEO audit' },
+  { key: 'seo.roadmap',              title: 'SEO roadmap' },
+  { key: 'research.press_topics',    title: 'Press / PR topics' },
+  { key: 'research.content_calendar', title: 'Content calendar' },
+];
+
+const STATUS_STEPS = [
+  'dataforseo.pull',
+  'advicelocal.listings',
+  'ghl.a2p_registration',
+];
+
+/** Split a long body into Slack-safe chunks (mrkdwn ~3500 chars/message). */
+function chunk(text: string, size = 3500): string[] {
+  const out: string[] = [];
+  let rest = text.trim();
+  while (rest.length > size) {
+    // Prefer to break on a paragraph/line boundary near the limit.
+    let cut = rest.lastIndexOf('\n', size);
+    if (cut < size * 0.5) cut = size;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.trim()) out.push(rest);
+  return out;
+}
+
+async function postSlack(
+  ctx: StepContext,
+  channel: string,
+  text: string,
+  thread_ts?: string,
+): Promise<string | undefined> {
+  const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${config.slack.botToken()}` },
+    json: { channel, text, mrkdwn: true, ...(thread_ts ? { thread_ts } : {}) },
+  });
+  if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
+  return res.body.ts as string | undefined;
+}
+
 async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
-  const wave2Keys = [
-    'gbp.optimize_plan',
-    'crawl.site_report',
-    'seo.roadmap',
-    'research.press_topics',
-    'research.content_calendar',
-    'dataforseo.pull',
-    'advicelocal.listings',
-    'ghl.a2p_registration',
-  ];
-  const { data: steps } = await db().from('run_steps').select('step_key, status').eq('run_id', ctx.run.id).in('step_key', wave2Keys);
-  const lines = (steps ?? []).map((s) => `• ${statusEmoji(s.status as string)} ${s.step_key}: ${s.status}`);
+  const allKeys = [...DRAFT_STEPS.map((d) => d.key), ...STATUS_STEPS];
+  const { data: steps } = await db()
+    .from('run_steps')
+    .select('step_key, status, output_json')
+    .eq('run_id', ctx.run.id)
+    .in('step_key', allKeys);
+  const byKey = new Map((steps ?? []).map((s) => [s.step_key as string, s]));
+
+  const lines = allKeys.map((k) => {
+    const s = byKey.get(k);
+    return `• ${statusEmoji((s?.status as string) ?? 'pending')} ${k}: ${s?.status ?? 'pending'}`;
+  });
   const summary =
     `*Wave 2 research ready for review — ${ctx.run.client_name ?? 'client'}*\n` +
-    `All AI outputs are DRAFTS and need approval before use.\n` +
-    lines.join('\n') +
-    `\n\nReview the drafts in the OnboardEngine dashboard run view.`;
+    `All AI outputs below are DRAFTS and need approval before use. ` +
+    `The full drafts are in this thread 🧵\n\n` +
+    lines.join('\n');
 
   const channel = ctx.run.slack_channel_id as string | undefined;
   if (!channel) return { posted: false, reason: 'no slack channel on run', summary };
 
-  const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
-    method: 'POST',
-    headers: { authorization: `Bearer ${config.slack.botToken()}` },
-    json: { channel, text: summary, mrkdwn: true },
-  });
-  if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
-  return { posted: true, ts: res.body.ts };
+  // 1) Post the summary; everything else threads under it to keep the channel tidy.
+  const rootTs = await postSlack(ctx, channel, summary);
+
+  // 2) Post each available draft as threaded reply(ies).
+  let postedDrafts = 0;
+  for (const d of DRAFT_STEPS) {
+    const s = byKey.get(d.key);
+    const out = (s?.output_json ?? {}) as Record<string, unknown>;
+    const body = typeof out.draft === 'string' ? out.draft.trim() : '';
+    if (!body) {
+      if (s && (s.status === 'skipped' || s.status === 'flagged' || s.status === 'failed')) {
+        const reason = typeof out.reason === 'string' ? ` — ${out.reason}` : '';
+        await postSlack(ctx, channel, `*${d.title}* — _${s.status}${reason}_`, rootTs);
+      }
+      continue;
+    }
+    const parts = chunk(body);
+    for (let i = 0; i < parts.length; i++) {
+      const header = parts.length > 1 ? `*${d.title}* _(part ${i + 1}/${parts.length})_\n` : `*${d.title}*\n`;
+      await postSlack(ctx, channel, `${header}${parts[i]}`, rootTs);
+    }
+    postedDrafts++;
+  }
+
+  return { posted: true, ts: rootTs, drafts_delivered: postedDrafts };
 }
+
 async function wave2RollupDry(ctx: StepContext): Promise<Record<string, unknown>> {
-  return simulated({ posted: false, note: 'would post Wave 2 review summary to the client channel' });
+  return simulated({ posted: false, note: 'would post the Wave 2 summary + full drafts to the client Slack channel' });
 }
 
 function statusEmoji(s: string): string {
@@ -185,12 +250,17 @@ function aiStep(key: string, dependsOn: string[], fn: (ctx: StepContext) => Prom
   };
 }
 
+// Wave 2 AI steps are gated on profile.normalize_clientform: they only run once
+// the Client MMW onboarding form has arrived, so each Opus draft is generated a
+// single time, on the rich form data, rather than twice on thin intake data.
+const G = ['phase0.gate', 'profile.normalize_clientform'];
+
 export const wave2Steps: Step[] = [
-  aiStep('gbp.optimize_plan', ['phase0.gate'], gbpOptimizePlan),
-  aiStep('crawl.site_report', ['phase0.gate'], crawlSiteReport),
+  aiStep('gbp.optimize_plan', G, gbpOptimizePlan),
+  aiStep('crawl.site_report', G, crawlSiteReport),
   aiStep('seo.roadmap', ['crawl.site_report', 'dataforseo.pull'], seoRoadmap),
-  aiStep('research.press_topics', ['phase0.gate'], (ctx) => research(ctx, 'press')),
-  aiStep('research.content_calendar', ['phase0.gate'], (ctx) => research(ctx, 'calendar')),
+  aiStep('research.press_topics', G, (ctx) => research(ctx, 'press')),
+  aiStep('research.content_calendar', G, (ctx) => research(ctx, 'calendar')),
   {
     key: 'wave2.rollup', wave: 2, safetyClass: 'reversible-write',
     dependsOn: ['gbp.optimize_plan', 'crawl.site_report', 'seo.roadmap', 'research.press_topics', 'research.content_calendar', 'dataforseo.pull', 'advicelocal.listings', 'ghl.a2p_registration'],
