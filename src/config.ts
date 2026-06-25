@@ -65,6 +65,12 @@ export const config = {
   drive: {
     saJson: () => required('GDRIVE_SA_JSON'),
     parentFolderId: () => required('CLIENTS_PARENT_FOLDER_ID'),
+    // Template client folder that new client folders are cloned from. Its
+    // subfolders + files (the "Passwords - [client name].xlsx" sheet) are
+    // recreated/copied into each new client root, with the "[client name]"
+    // placeholder swapped for the real client name. Defaults to the known
+    // template folder id so it works without extra Render config.
+    templateFolderId: () => optional('CLIENTS_TEMPLATE_FOLDER_ID', '1nbMBR2g0ICDGdseQ-OvYNGIPuf_bvIn3'),
   },
   namecheap: {
     apiUser: () => required('NAMECHEAP_API_USER'),
