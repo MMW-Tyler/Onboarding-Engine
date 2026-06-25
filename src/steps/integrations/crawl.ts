@@ -82,6 +82,24 @@ const SIGNATURES: Signature[] = [
     html: [/<meta[^>]+generator[^>]+Framer/i, /framerusercontent\.com/i],
     host: [/framer\.(website|app)/i],
   },
+  {
+    // iMatrix / Internet Brands proprietary "WM2" builder (ChiroMatrix,
+    // OptometryMatrix, etc.). Distinctive markers: their deferred-script type,
+    // the wm-* custom elements + wmJsConfig bootstrap, the evona.app media CDN,
+    // and the chiromatrixbase.com / imatrix.com back-end. Proprietary, so it is
+    // a refer-out / rebuild for MMW (never a take-in-house "green light").
+    platform: 'iMatrix',
+    html: [
+      /dba iMatrix/i,
+      /\bimatrix\.com\b/i,
+      /chiromatrixbase\.com/i,
+      /chiromatrix/i,
+      /(?:media|storage)\.evona\.app/i,
+      /text\/wmdjs/i,
+      /wmJsConfig|globalThis\.WMComponents|<wm-img/i,
+    ],
+    host: [/chiromatrixbase\.com/i],
+  },
 ];
 
 function siteUrl(ctx: StepContext): string | null {

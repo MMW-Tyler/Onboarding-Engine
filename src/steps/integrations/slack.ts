@@ -173,6 +173,105 @@ async function postProfileDry(ctx: StepContext): Promise<Record<string, unknown>
   return simulated({ ts: simId('ts'), profile_bytes: json.length });
 }
 
+// --- wave1.rollup: one post listing the created assets + their links ---------
+// Replaces the redundant sale-summary / profile reposts (the Zap already posts
+// the form fields). This is the team's "everything's set up" catch: each asset
+// with a link, the detected website platform, and a flag on anything to review.
+const W1_ASSET_STEPS = [
+  'slack.create_channel',
+  'hubspot.upsert',
+  'clickup.clone_template',
+  'clickup.master_tracker',
+  'drive.create_folders',
+  'ghl.provision_subaccount',
+  'namecheap.purchase_domain',
+  'dns.ghl_records',
+  'dns.mailgun_records',
+  'mailgun.add_domain',
+  'warmup.enroll',
+  'crawl.detect_platform',
+];
+
+function rollupEmoji(s: string | undefined): string {
+  return s === 'succeeded' ? '✅' : s === 'simulated' ? '🔵' : s === 'skipped' ? '⏭️' : (s === 'flagged' || s === 'failed') ? '⚠️' : '⏳';
+}
+
+async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
+  const { data: run } = await db().from('onboarding_runs').select('*').eq('id', ctx.run.id).single();
+  const r = (run ?? ctx.run) as Record<string, any>;
+  const channel = r.slack_channel_id as string | undefined;
+  if (!channel) return { posted: false, reason: 'no slack channel on run' };
+
+  const { data: stepRows } = await db()
+    .from('run_steps').select('step_key, status, output_json').eq('run_id', ctx.run.id).in('step_key', W1_ASSET_STEPS);
+  const byKey = new Map((stepRows ?? []).map((s) => [s.step_key as string, s]));
+  const stat = (k: string) => (byKey.get(k)?.status as string | undefined);
+  const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
+
+  const team = config.clickup.teamId();
+  const profile = (r.client_profile_json ?? {}) as Record<string, any>;
+
+  // Build "asset: link" lines, only for assets that produced an id.
+  const lines: string[] = [];
+  lines.push(`• ${rollupEmoji(stat('slack.create_channel'))} Slack channel: this channel`);
+
+  const companyId = (r.hubspot_company_id as string | undefined) ?? out('hubspot.upsert').company_id;
+  if (companyId) {
+    const portal = config.hubspot.portalId();
+    const link = portal ? `https://app.hubspot.com/contacts/${portal}/company/${companyId}` : `id ${companyId}`;
+    lines.push(`• ${rollupEmoji(stat('hubspot.upsert'))} HubSpot company: ${link}`);
+  }
+
+  const folderId = r.clickup_folder_id as string | undefined;
+  if (folderId && team) lines.push(`• ${rollupEmoji(stat('clickup.clone_template'))} ClickUp folder: https://app.clickup.com/${team}/v/f/${folderId}`);
+  const taskId = out('clickup.master_tracker').task_id as string | undefined;
+  if (taskId) lines.push(`• ${rollupEmoji(stat('clickup.master_tracker'))} ClickUp tracker task: https://app.clickup.com/t/${taskId}`);
+
+  const driveId = r.drive_root_folder_id as string | undefined;
+  if (driveId) lines.push(`• ${rollupEmoji(stat('drive.create_folders'))} Google Drive: https://drive.google.com/drive/folders/${driveId}`);
+
+  const locId = r.ghl_location_id as string | undefined;
+  if (locId) lines.push(`• ${rollupEmoji(stat('ghl.provision_subaccount'))} GHL sub-account: id ${locId}`);
+
+  // Website platform check (the one piece of net-new info vs. the intake form).
+  const platform = (profile.detected_platform as string | undefined) || 'unknown';
+  const builder = profile.detected_wp_builder as string | undefined;
+  let platformLine: string;
+  if (platform === 'unknown') {
+    platformLine = `⚠️ Website platform: *unknown* — confirm manually`;
+  } else if (platform === 'WordPress') {
+    const ready = profile.mmw_take_in_house === true;
+    platformLine = `${ready ? '✅' : '⚠️'} Website platform: *WordPress${builder ? ` / ${builder}` : ''}*${ready ? ' (Elementor — take in-house)' : ' (not Elementor — review)'}`;
+  } else {
+    platformLine = `⚠️ Website platform: *${platform}* (proprietary — refer-out / rebuild)`;
+  }
+
+  // Email/domain stack is pinned dry for now; note it so no one expects it live.
+  const emailKeys = ['namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll'];
+  const emailSimulated = emailKeys.every((k) => stat(k) === 'simulated' || stat(k) === undefined);
+
+  const summary =
+    `*✅ Wave 1 complete — ${r.client_name ?? 'client'}*\n` +
+    `Account setup is done. Wave 2 (AI research) runs when the Client MMW onboarding form arrives.\n\n` +
+    `*Assets created*\n${lines.join('\n')}\n\n` +
+    `${platformLine}\n` +
+    (emailSimulated ? `🔵 Domain + email stack: simulated (pinned dry — not provisioned yet)` : '');
+
+  const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
+    method: 'POST',
+    headers: authHeader(),
+    json: { channel, text: summary, mrkdwn: true },
+  });
+  if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
+  return { posted: true, ts: res.body.ts, assets: lines.length };
+}
+
+async function wave1RollupDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  await authProbe(ctx);
+  return simulated({ posted: false, note: 'would post the Wave 1 asset roll-up to the client channel' });
+}
+
 export const slackSteps: Step[] = [
   {
     key: 'slack.create_channel', wave: 1, safetyClass: 'reversible-write', dependsOn: [], maxAttempts: 3,
@@ -192,5 +291,15 @@ export const slackSteps: Step[] = [
     key: 'slack.post_clientform_profile', wave: 2, safetyClass: 'reversible-write',
     dependsOn: ['profile.normalize_clientform'], maxAttempts: 3,
     isApplicable: () => true, runReal: postProfileReal, runDry: postProfileDry,
+  },
+  {
+    // Posts after all Wave 1 assets exist; depends on them so it reads final ids.
+    key: 'slack.wave1_rollup', wave: 1, safetyClass: 'reversible-write',
+    dependsOn: [
+      'slack.create_channel', 'hubspot.upsert', 'clickup.clone_template', 'clickup.master_tracker',
+      'drive.create_folders', 'ghl.provision_subaccount', 'crawl.detect_platform',
+      'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll',
+    ],
+    maxAttempts: 3, isApplicable: () => true, runReal: wave1RollupReal, runDry: wave1RollupDry,
   },
 ];

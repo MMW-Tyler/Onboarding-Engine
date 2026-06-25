@@ -50,6 +50,10 @@ export const config = {
   },
   hubspot: {
     accessToken: () => required('HUBSPOT_ACCESS_TOKEN'),
+    // Optional: your HubSpot portal (account) id, used only to build a clickable
+    // company link in the Wave 1 Slack roll-up. Without it the roll-up shows the
+    // company id instead of a deep link.
+    portalId: () => optional('HUBSPOT_PORTAL_ID'),
   },
   clickup: {
     apiToken: () => required('CLICKUP_API_TOKEN'),

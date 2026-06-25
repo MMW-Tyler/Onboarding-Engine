@@ -19,8 +19,6 @@ export const recipes: Record<string, string[]> = {
     'profile.normalize_intake',
     'crawl.detect_platform',
     'slack.create_channel',
-    'slack.post_sale_summary',
-    'slack.post_intake_profile',
     'hubspot.upsert',
     'clickup.clone_template',
     'clickup.master_tracker',
@@ -31,6 +29,9 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'warmup.enroll',
     'ghl.provision_subaccount',
+    // One consolidated Slack post (assets + links + detected platform). Replaces
+    // the old sale-summary / profile reposts - the Zap already posts the form.
+    'slack.wave1_rollup',
     'phase0.gate',
   ],
 
