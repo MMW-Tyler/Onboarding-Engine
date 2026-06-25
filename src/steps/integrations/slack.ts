@@ -196,6 +196,11 @@ function rollupEmoji(s: string | undefined): string {
   return s === 'succeeded' ? '✅' : s === 'simulated' ? '🔵' : s === 'skipped' ? '⏭️' : (s === 'flagged' || s === 'failed') ? '⚠️' : '⏳';
 }
 
+/** Slack hyperlink: renders as a clickable label instead of a raw URL. */
+function link(url: string, label: string): string {
+  return `<${url}|${label}>`;
+}
+
 async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
   // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
   const { data: run } = await db().from('onboarding_runs').select('*').eq('id', ctx.run.id).single();
@@ -211,57 +216,68 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
 
   const team = config.clickup.teamId();
   const profile = (r.client_profile_json ?? {}) as Record<string, any>;
+  const client = r.client_name ?? 'client';
 
-  // Build "asset: link" lines, only for assets that produced an id.
+  // Build "asset — link" lines, only for assets that produced an id. Links use
+  // Slack's <url|label> syntax so they render as a clickable label, not a raw URL.
   const lines: string[] = [];
-  lines.push(`• ${rollupEmoji(stat('slack.create_channel'))} Slack channel: this channel`);
+  lines.push(`${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  this channel`);
 
   const companyId = (r.hubspot_company_id as string | undefined) ?? out('hubspot.upsert').company_id;
   if (companyId) {
     const portal = config.hubspot.portalId();
-    const link = portal ? `https://app.hubspot.com/contacts/${portal}/company/${companyId}` : `id ${companyId}`;
-    lines.push(`• ${rollupEmoji(stat('hubspot.upsert'))} HubSpot company: ${link}`);
+    const val = portal ? link(`https://app.hubspot.com/contacts/${portal}/company/${companyId}`, 'Open in HubSpot') : `id \`${companyId}\``;
+    lines.push(`${rollupEmoji(stat('hubspot.upsert'))}  *HubSpot company*  —  ${val}`);
   }
 
   const folderId = r.clickup_folder_id as string | undefined;
-  if (folderId && team) lines.push(`• ${rollupEmoji(stat('clickup.clone_template'))} ClickUp folder: https://app.clickup.com/${team}/v/f/${folderId}`);
+  if (folderId && team) lines.push(`${rollupEmoji(stat('clickup.clone_template'))}  *ClickUp folder*  —  ${link(`https://app.clickup.com/${team}/v/f/${folderId}`, 'Open folder')}`);
   const taskId = out('clickup.master_tracker').task_id as string | undefined;
-  if (taskId) lines.push(`• ${rollupEmoji(stat('clickup.master_tracker'))} ClickUp tracker task: https://app.clickup.com/t/${taskId}`);
+  if (taskId) lines.push(`${rollupEmoji(stat('clickup.master_tracker'))}  *ClickUp tracker*  —  ${link(`https://app.clickup.com/t/${taskId}`, 'Open task')}`);
 
   const driveId = r.drive_root_folder_id as string | undefined;
-  if (driveId) lines.push(`• ${rollupEmoji(stat('drive.create_folders'))} Google Drive: https://drive.google.com/drive/folders/${driveId}`);
+  if (driveId) lines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${link(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
 
   const locId = r.ghl_location_id as string | undefined;
-  if (locId) lines.push(`• ${rollupEmoji(stat('ghl.provision_subaccount'))} GHL sub-account: id ${locId}`);
+  if (locId) lines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  id \`${locId}\``);
 
   // Website platform check (the one piece of net-new info vs. the intake form).
   const platform = (profile.detected_platform as string | undefined) || 'unknown';
   const builder = profile.detected_wp_builder as string | undefined;
   let platformLine: string;
   if (platform === 'unknown') {
-    platformLine = `⚠️ Website platform: *unknown* — confirm manually`;
+    platformLine = `⚠️  *Website platform:* unknown — confirm manually`;
   } else if (platform === 'WordPress') {
     const ready = profile.mmw_take_in_house === true;
-    platformLine = `${ready ? '✅' : '⚠️'} Website platform: *WordPress${builder ? ` / ${builder}` : ''}*${ready ? ' (Elementor — take in-house)' : ' (not Elementor — review)'}`;
+    platformLine = `${ready ? '✅' : '⚠️'}  *Website platform:* WordPress${builder ? ` / ${builder}` : ''} ${ready ? '— Elementor, take in-house' : '— not Elementor, review'}`;
   } else {
-    platformLine = `⚠️ Website platform: *${platform}* (proprietary — refer-out / rebuild)`;
+    platformLine = `⚠️  *Website platform:* ${platform} — proprietary, refer-out / rebuild`;
   }
 
   // Email/domain stack is pinned dry for now; note it so no one expects it live.
   const emailKeys = ['namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll'];
   const emailSimulated = emailKeys.every((k) => stat(k) === 'simulated' || stat(k) === undefined);
 
-  const summary =
-    `*✅ Wave 1 complete — ${r.client_name ?? 'client'}*\n` +
-    `Account setup is done. Wave 2 (AI research) runs when the Client MMW onboarding form arrives.\n\n` +
-    `*Assets created*\n${lines.join('\n')}\n\n` +
-    `${platformLine}\n` +
-    (emailSimulated ? `🔵 Domain + email stack: simulated (pinned dry — not provisioned yet)` : '');
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${client}`, emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. *Wave 2* (AI research) kicks off when the Client MMW onboarding form arrives.` } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${lines.join('\n')}` } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: platformLine } },
+  ];
+  if (emailSimulated) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '🔵 Domain + email stack simulated (pinned dry — not provisioned yet)' }] });
+  }
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${r.id}\`` }] });
+
+  // Plain-text fallback (notifications / clients that don't render blocks).
+  const fallback = `Wave 1 complete — ${client}: ${lines.length} assets created.`;
 
   const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
     method: 'POST',
     headers: authHeader(),
-    json: { channel, text: summary, mrkdwn: true },
+    json: { channel, text: fallback, blocks },
   });
   if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
   return { posted: true, ts: res.body.ts, assets: lines.length };

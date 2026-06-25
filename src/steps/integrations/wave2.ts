@@ -172,16 +172,32 @@ async function postSlack(
   ctx: StepContext,
   channel: string,
   text: string,
-  thread_ts?: string,
+  opts: { thread_ts?: string; blocks?: unknown[] } = {},
 ): Promise<string | undefined> {
   const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
     method: 'POST',
     headers: { authorization: `Bearer ${config.slack.botToken()}` },
-    json: { channel, text, mrkdwn: true, ...(thread_ts ? { thread_ts } : {}) },
+    json: {
+      channel, text, mrkdwn: true,
+      ...(opts.blocks ? { blocks: opts.blocks } : {}),
+      ...(opts.thread_ts ? { thread_ts: opts.thread_ts } : {}),
+    },
   });
   if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
   return res.body.ts as string | undefined;
 }
+
+// Friendly labels for the status list in the rollup summary.
+const STEP_LABELS: Record<string, string> = {
+  'gbp.optimize_plan': 'Google Business Profile plan',
+  'crawl.site_report': 'Website / SEO audit',
+  'seo.roadmap': 'SEO roadmap',
+  'research.press_topics': 'Press / PR topics',
+  'research.content_calendar': 'Content calendar',
+  'dataforseo.pull': 'Keyword data (DataForSEO)',
+  'advicelocal.listings': 'Local listings (Advice Local)',
+  'ghl.a2p_registration': 'A2P 10DLC registration',
+};
 
 async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
   const allKeys = [...DRAFT_STEPS.map((d) => d.key), ...STATUS_STEPS];
@@ -192,21 +208,26 @@ async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
     .in('step_key', allKeys);
   const byKey = new Map((steps ?? []).map((s) => [s.step_key as string, s]));
 
+  const client = ctx.run.client_name ?? 'client';
   const lines = allKeys.map((k) => {
     const s = byKey.get(k);
-    return `• ${statusEmoji((s?.status as string) ?? 'pending')} ${k}: ${s?.status ?? 'pending'}`;
+    const status = (s?.status as string) ?? 'pending';
+    return `${statusEmoji(status)}  *${STEP_LABELS[k] ?? k}*  —  ${status}`;
   });
-  const summary =
-    `*Wave 2 research ready for review — ${ctx.run.client_name ?? 'client'}*\n` +
-    `All AI outputs below are DRAFTS and need approval before use. ` +
-    `The full drafts are in this thread 🧵\n\n` +
-    lines.join('\n');
+  const summaryBlocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: `🔬 Wave 2 research ready — ${client}`, emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: `All outputs below are *drafts* — review and approve before use. The full drafts are in this thread 🧵` } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: `:clipboard: *Deliverables*\n${lines.join('\n')}` } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${ctx.run.id}\`` }] },
+  ];
+  const fallback = `Wave 2 research ready for review — ${client} (drafts in thread).`;
 
   const channel = ctx.run.slack_channel_id as string | undefined;
-  if (!channel) return { posted: false, reason: 'no slack channel on run', summary };
+  if (!channel) return { posted: false, reason: 'no slack channel on run', summary: fallback };
 
   // 1) Post the summary; everything else threads under it to keep the channel tidy.
-  const rootTs = await postSlack(ctx, channel, summary);
+  const rootTs = await postSlack(ctx, channel, fallback, { blocks: summaryBlocks });
 
   // 2) Post each available draft as threaded reply(ies).
   let postedDrafts = 0;
@@ -217,14 +238,14 @@ async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
     if (!body) {
       if (s && (s.status === 'skipped' || s.status === 'flagged' || s.status === 'failed')) {
         const reason = typeof out.reason === 'string' ? ` — ${out.reason}` : '';
-        await postSlack(ctx, channel, `*${d.title}* — _${s.status}${reason}_`, rootTs);
+        await postSlack(ctx, channel, `📄 *${d.title}*\n_${s.status}${reason}_`, { thread_ts: rootTs });
       }
       continue;
     }
     const parts = chunk(body);
     for (let i = 0; i < parts.length; i++) {
-      const header = parts.length > 1 ? `*${d.title}* _(part ${i + 1}/${parts.length})_\n` : `*${d.title}*\n`;
-      await postSlack(ctx, channel, `${header}${parts[i]}`, rootTs);
+      const header = parts.length > 1 ? `📄 *${d.title}*  ·  _part ${i + 1}/${parts.length}_` : `📄 *${d.title}*`;
+      await postSlack(ctx, channel, `${header}\n\n${parts[i]}`, { thread_ts: rootTs });
     }
     postedDrafts++;
   }
