@@ -18,6 +18,7 @@ import { profileOf, simId, simulated } from './util.js';
  * ClickUp auth uses the raw token with NO "Bearer " prefix.
  */
 const CU = 'https://api.clickup.com/api/v2';
+const CU3 = 'https://api.clickup.com/api/v3';
 
 function authHeader(): Record<string, string> {
   return { authorization: config.clickup.apiToken() };
@@ -25,6 +26,67 @@ function authHeader(): Record<string, string> {
 
 function clientName(ctx: StepContext): string {
   return (ctx.run.client_name as string) || (profileOf(ctx.run).office_name ?? ctx.run.id);
+}
+
+interface DocPage {
+  id: string;
+  name?: string;
+  pages?: DocPage[];
+}
+
+/** Depth-first search a (possibly nested) ClickUp doc page tree. */
+function findPage(pages: DocPage[], pred: (p: DocPage) => boolean): DocPage | null {
+  for (const p of pages) {
+    if (pred(p)) return p;
+    const child = findPage(p.pages ?? [], pred);
+    if (child) return child;
+  }
+  return null;
+}
+
+/**
+ * Best-effort rename of the master-record doc that rides along with the cloned
+ * folder. The folder-template duplicate copies the doc, but its root page keeps
+ * the template title ("{Client Name} Master Record"); we rename that page to the
+ * real client name so the open doc reads correctly.
+ *
+ * NOTE: ClickUp's public API has no endpoint to rename a Doc's top-level name,
+ * so the folder's doc-list label keeps its "{{Client Name}} Master Record
+ * (copy)" artifact - that one stays a manual tidy-up. We rename the page (the
+ * in-doc title + what search indexes), which is the most the API allows.
+ * Requires CLICKUP_TEAM_ID (the v3 Docs API is workspace-scoped).
+ */
+async function renameMasterDoc(ctx: StepContext, folderId: string, name: string): Promise<Record<string, unknown>> {
+  const workspaceId = config.clickup.teamId();
+  if (!workspaceId) {
+    await ctx.logEvent({ level: 'warn', endpoint: 'clickup.doc.rename', response_body: { skipped: 'CLICKUP_TEAM_ID not set' } });
+    return { renamed: false, reason: 'no_team_id' };
+  }
+
+  // Find the doc inside the freshly cloned folder (parent_type 5 = Folder).
+  const searchUrl = `${CU3}/workspaces/${workspaceId}/docs?parent_id=${folderId}&parent_type=5&limit=50`;
+  const search = await callApi<any>(ctx, searchUrl, 'clickup.doc.search', { headers: authHeader() });
+  const docs: any[] = search.body?.docs ?? (Array.isArray(search.body) ? search.body : []);
+  const inFolder = docs.filter((d) => !d?.parent?.id || String(d.parent.id) === String(folderId));
+  const doc = inFolder.find((d) => /master record/i.test(d?.name ?? '')) ?? inFolder[0];
+  if (!doc?.id) {
+    await ctx.logEvent({ level: 'warn', endpoint: 'clickup.doc.rename', response_body: { reason: 'doc_not_found', docs: docs.length } });
+    return { renamed: false, reason: 'doc_not_found' };
+  }
+
+  // Locate the root "...Master Record" page (still carrying the template title).
+  const pagesRes = await callApi<any>(ctx, `${CU3}/workspaces/${workspaceId}/docs/${doc.id}/pages`, 'clickup.doc.pages', { headers: authHeader() });
+  const pages: DocPage[] = Array.isArray(pagesRes.body) ? pagesRes.body : (pagesRes.body?.pages ?? []);
+  const page = findPage(pages, (p) => /master record/i.test(p.name ?? '')) ?? pages[0];
+  if (!page?.id) {
+    return { renamed: false, reason: 'page_not_found', doc_id: doc.id };
+  }
+
+  const newName = `${name} Master Record`;
+  await callApi(ctx, `${CU3}/workspaces/${workspaceId}/docs/${doc.id}/pages/${page.id}`, 'clickup.doc.page.rename', {
+    method: 'PUT', headers: authHeader(), json: { name: newName },
+  });
+  return { renamed: true, doc_id: doc.id, page_id: page.id, page_name: newName, doc_label_unchanged: doc.name ?? null };
 }
 
 // --- clone_template: duplicate the client template folder ---
@@ -38,10 +100,19 @@ async function cloneTemplateReal(ctx: StepContext): Promise<Record<string, unkno
     { method: 'POST', headers: authHeader(), json: { name: clientName(ctx), return_immediately: false } },
   );
   const folderId = (res.body?.folder?.id ?? res.body?.id) as string | undefined;
+  let masterDoc: Record<string, unknown> = { renamed: false, reason: 'no_folder' };
   if (folderId) {
     await db().from('onboarding_runs').update({ clickup_folder_id: folderId, updated_at: new Date().toISOString() }).eq('id', ctx.run.id);
+    // Best-effort: rename the cloned master-record doc's page. A failure here
+    // must not fail the clone (the folder + tracker are what matter).
+    try {
+      masterDoc = await renameMasterDoc(ctx, folderId, clientName(ctx));
+    } catch (err) {
+      masterDoc = { renamed: false, error: err instanceof Error ? err.message : String(err) };
+      await ctx.logEvent({ level: 'warn', endpoint: 'clickup.doc.rename', response_body: masterDoc });
+    }
   }
-  return { folder_id: folderId ?? null, name: clientName(ctx) };
+  return { folder_id: folderId ?? null, name: clientName(ctx), master_doc: masterDoc };
 }
 async function cloneTemplateDry(ctx: StepContext): Promise<Record<string, unknown>> {
   // Read-safe probe: confirm the target space is reachable with this token.
