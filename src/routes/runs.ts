@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { createRun, retryStep, retryAllFlagged } from '../engine/runs.js';
+import { createRun, retryStep, retryAllFlagged, rerunRun } from '../engine/runs.js';
 import { redact } from '../redact.js';
 
 export const runsRouter = Router();
@@ -84,6 +84,21 @@ runsRouter.post('/runs/:id/steps/:key/retry', async (req, res) => {
   try {
     await retryStep(req.params.id, req.params.key);
     return res.json({ ok: true, retried: req.params.key });
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** POST /runs/:id/rerun {mode?} - re-run the whole run in the given mode
+ *  (default live). Resets every step + re-enqueues from scratch, reusing the
+ *  same run row. Used to promote a dry run to a real one without re-webhooking. */
+const rerunSchema = z.object({ mode: z.enum(['dry', 'live']).optional() });
+runsRouter.post('/runs/:id/rerun', async (req, res) => {
+  const parsed = rerunSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'mode must be dry|live' });
+  try {
+    const result = await rerunRun(req.params.id, parsed.data.mode ?? 'live');
+    return res.json({ ok: true, ...result });
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

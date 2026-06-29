@@ -211,6 +211,65 @@ export async function retryStep(runId: string, stepKey: string): Promise<void> {
   await enqueueJobs(runId, [stepKey]);
 }
 
+export interface RerunResult {
+  runId: string;
+  mode: RunMode;
+  reset: number;
+  queued: string[];
+}
+
+/**
+ * Re-run an entire existing run in the given mode (default live). Used to turn a
+ * run that executed in dry mode into a real one without re-sending the webhook
+ * or redoing any upstream (e.g. Zapier) setup.
+ *
+ * Flips the run's mode, resets every step to a clean `pending` (clearing
+ * attempts / last_error / output_json), clears the run-level wave + phase0
+ * bookkeeping, drops the run's job rows, then re-enqueues the steps with no
+ * in-run dependencies - exactly like a fresh createRun, but reusing the SAME run
+ * row and everything stored on it (slack_channel_id, domain, profile, ...).
+ *
+ * Safe to go live on a previously-dry run: the write steps are find-or-create /
+ * search-first (Slack channel, HubSpot company/contacts, ClickUp, Drive), so a
+ * live re-run reuses assets that already exist rather than duplicating them, and
+ * any pinned-dry steps (the domain/email stack) still simulate.
+ */
+export async function rerunRun(runId: string, mode: RunMode = 'live'): Promise<RerunResult> {
+  const { data: run, error: runErr } = await db()
+    .from('onboarding_runs').select('id').eq('id', runId).maybeSingle();
+  if (runErr) throw new Error(`rerunRun: ${runErr.message}`);
+  if (!run) throw new Error(`rerunRun: no such run ${runId}`);
+
+  const { data: steps, error: stepsErr } = await db()
+    .from('run_steps').select('step_key, depends_on').eq('run_id', runId);
+  if (stepsErr) throw new Error(`rerunRun: ${stepsErr.message}`);
+  if (!steps || steps.length === 0) throw new Error(`rerunRun: run ${runId} has no steps`);
+
+  // Flip mode + reset run-level bookkeeping so phase0 re-gates.
+  await db().from('onboarding_runs').update({
+    mode,
+    phase0_complete: false,
+    wave1_status: 'pending',
+    wave2_status: 'pending',
+    updated_at: new Date().toISOString(),
+  }).eq('id', runId);
+
+  // Reset every step to a clean pending state.
+  await db().from('run_steps').update({
+    status: 'pending', attempts: 0, last_error: null, output_json: null, updated_at: new Date().toISOString(),
+  }).eq('run_id', runId);
+
+  // Clear the job queue for this run, then re-enqueue the immediately-ready steps.
+  await db().from('jobs').delete().eq('run_id', runId);
+
+  const ready = steps
+    .filter((s) => ((s.depends_on as string[]) ?? []).length === 0)
+    .map((s) => s.step_key as string);
+  if (ready.length > 0) await enqueueJobs(runId, ready);
+
+  return { runId, mode, reset: steps.length, queued: ready };
+}
+
 /** Bulk "retry all flagged" for a run (spec section 10). Returns the keys retried. */
 export async function retryAllFlagged(runId: string): Promise<string[]> {
   const { data, error } = await db().from('run_steps')
