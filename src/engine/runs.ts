@@ -280,6 +280,23 @@ export async function retryAllFlagged(runId: string): Promise<string[]> {
   return keys;
 }
 
+/**
+ * Resume a partially-failed run: retry every step that ended flagged / blocked /
+ * failed, leaving succeeded / simulated / skipped steps untouched. The runner's
+ * dependency check re-orders them, so a flagged upstream step that cascade-blocked
+ * its dependents recovers in one click once the upstream cause is fixed (e.g.
+ * after pinning a step dry). Unlike a full re-run it never re-touches completed
+ * write steps, so it won't duplicate already-created assets. Returns keys retried.
+ */
+export async function resumeRun(runId: string): Promise<string[]> {
+  const { data, error } = await db().from('run_steps')
+    .select('step_key').eq('run_id', runId).in('status', ['flagged', 'blocked', 'failed']);
+  if (error) throw new Error(`resumeRun: ${error.message}`);
+  const keys = (data ?? []).map((r) => r.step_key as string);
+  for (const k of keys) await retryStep(runId, k);
+  return keys;
+}
+
 /** Load a single run_steps row. */
 export async function loadStep(runId: string, stepKey: string): Promise<RunStep | null> {
   const { data, error } = await db()

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { createRun, retryStep, retryAllFlagged, rerunRun } from '../engine/runs.js';
+import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun } from '../engine/runs.js';
 import { redact } from '../redact.js';
 
 export const runsRouter = Router();
@@ -109,6 +109,17 @@ runsRouter.post('/runs/:id/retry-flagged', async (req, res) => {
   try {
     const retried = await retryAllFlagged(req.params.id);
     return res.json({ ok: true, retried });
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** POST /runs/:id/resume - retry all flagged + blocked + failed steps, leaving
+ *  completed ones alone. Safe recovery that won't duplicate created assets. */
+runsRouter.post('/runs/:id/resume', async (req, res) => {
+  try {
+    const resumed = await resumeRun(req.params.id);
+    return res.json({ ok: true, resumed });
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

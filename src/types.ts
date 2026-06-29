@@ -80,6 +80,14 @@ export interface Step {
   wave: Wave;
   safetyClass: SafetyClass;
   dependsOn: string[];
+  /**
+   * Ordering-only dependencies: the step waits until these have reached a
+   * terminal state, but is NEVER blocked by their failure (unlike dependsOn).
+   * Used for steps like the Wave 1 roll-up that must run last AND must still
+   * run when something upstream flagged, so they can report it. Code-only
+   * (resolved from the step definition by the runner); not persisted.
+   */
+  softDependsOn?: string[];
   maxAttempts: number;
   /** backoff profile; defaults from safetyClass when omitted */
   retryProfile?: RetryProfile;

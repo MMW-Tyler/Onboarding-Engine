@@ -28,6 +28,10 @@ function clientName(ctx: StepContext): string {
   return (ctx.run.client_name as string) || (profileOf(ctx.run).office_name ?? ctx.run.id);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface DocPage {
   id: string;
   name?: string;
@@ -63,14 +67,23 @@ async function renameMasterDoc(ctx: StepContext, folderId: string, name: string)
     return { renamed: false, reason: 'no_team_id' };
   }
 
-  // Find the doc inside the freshly cloned folder (parent_type 5 = Folder).
+  // Find the doc inside the freshly cloned folder (parent_type 5 = Folder). The
+  // folder-template duplicate populates its doc asynchronously, so poll a few
+  // times before giving up rather than racing the clone.
   const searchUrl = `${CU3}/workspaces/${workspaceId}/docs?parent_id=${folderId}&parent_type=5&limit=50`;
-  const search = await callApi<any>(ctx, searchUrl, 'clickup.doc.search', { headers: authHeader() });
-  const docs: any[] = search.body?.docs ?? (Array.isArray(search.body) ? search.body : []);
-  const inFolder = docs.filter((d) => !d?.parent?.id || String(d.parent.id) === String(folderId));
-  const doc = inFolder.find((d) => /master record/i.test(d?.name ?? '')) ?? inFolder[0];
+  let doc: any | undefined;
+  let lastCount = 0;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) await sleep(3000);
+    const search = await callApi<any>(ctx, searchUrl, 'clickup.doc.search', { headers: authHeader() });
+    const docs: any[] = search.body?.docs ?? (Array.isArray(search.body) ? search.body : []);
+    lastCount = docs.length;
+    const inFolder = docs.filter((d) => !d?.parent?.id || String(d.parent.id) === String(folderId));
+    doc = inFolder.find((d) => /master record/i.test(d?.name ?? '')) ?? inFolder[0];
+    if (doc?.id) break;
+  }
   if (!doc?.id) {
-    await ctx.logEvent({ level: 'warn', endpoint: 'clickup.doc.rename', response_body: { reason: 'doc_not_found', docs: docs.length } });
+    await ctx.logEvent({ level: 'warn', endpoint: 'clickup.doc.rename', response_body: { reason: 'doc_not_found', docs: lastCount } });
     return { renamed: false, reason: 'doc_not_found' };
   }
 

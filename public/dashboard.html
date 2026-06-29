@@ -253,7 +253,8 @@ async function loadDetail() {
     let html = '<div class="row-actions">' +
       '<h2 class="detail-head" style="border:none;color:var(--ink);margin:0;">' + (run.client_name || '(no name)') + '</h2>' +
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
-      '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset every step and re-run the whole run live (reuses existing assets; pinned-dry steps stay simulated)">re-run live</button>' +
+      '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
+      '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset EVERY step and re-run the whole run live. Use only to promote a dry run — re-running a live run re-creates Drive/ClickUp assets.">re-run live</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
       '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;letter-spacing:.05em;">' +
       run.recipe + ' · ' + run.mode + '</div>' +
@@ -283,6 +284,14 @@ async function retryFlagged() {
   try { const r = await api('/runs/' + selectedRun + '/retry-flagged', { method: 'POST' });
     toast('retrying ' + (r.retried || []).length + ' flagged'); setTimeout(loadDetail, 600); }
   catch (e) { toast('error: ' + e.message); }
+}
+
+async function resumeRun() {
+  try {
+    const r = await api('/runs/' + selectedRun + '/resume', { method: 'POST' });
+    toast('resuming ' + ((r.resumed || []).length) + ' steps');
+    setTimeout(loadDetail, 800);
+  } catch (e) { toast('error: ' + e.message); }
 }
 
 async function rerunLive(currentMode) {

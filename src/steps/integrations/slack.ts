@@ -309,10 +309,14 @@ export const slackSteps: Step[] = [
     isApplicable: () => true, runReal: postProfileReal, runDry: postProfileDry,
   },
   {
-    // Posts after all Wave 1 assets exist; depends on them so it reads final ids.
+    // Posts last, after every Wave 1 asset step has finished. These are SOFT
+    // deps: the roll-up waits for them to be terminal but is never blocked by a
+    // failure, so it always posts and can flag whatever errored ("nice catch").
+    // It does hard-depend on the channel since it has nowhere to post without it.
     key: 'slack.wave1_rollup', wave: 1, safetyClass: 'reversible-write',
-    dependsOn: [
-      'slack.create_channel', 'hubspot.upsert', 'clickup.clone_template', 'clickup.master_tracker',
+    dependsOn: ['slack.create_channel'],
+    softDependsOn: [
+      'hubspot.upsert', 'clickup.clone_template', 'clickup.master_tracker',
       'drive.create_folders', 'ghl.provision_subaccount', 'crawl.detect_platform',
       'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll',
     ],

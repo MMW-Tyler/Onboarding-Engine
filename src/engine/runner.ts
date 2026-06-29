@@ -19,6 +19,9 @@ export interface JobRow {
 const SATISFIED: ReadonlySet<StepStatus> = new Set<StepStatus>(['succeeded', 'simulated', 'skipped']);
 const BROKEN: ReadonlySet<StepStatus> = new Set<StepStatus>(['failed', 'flagged', 'blocked']);
 const TERMINAL: ReadonlySet<StepStatus> = new Set<StepStatus>(['succeeded', 'simulated', 'skipped']);
+// Any state a step can no longer move out of on its own - used for soft deps,
+// which wait for upstream to be DONE (success or failure) but never block.
+const ALL_TERMINAL: ReadonlySet<StepStatus> = new Set<StepStatus>(['succeeded', 'simulated', 'skipped', 'failed', 'flagged', 'blocked']);
 
 /**
  * Process one claimed job (spec section 09, runner algorithm).
@@ -65,6 +68,17 @@ export async function processJob(job: JobRow): Promise<void> {
   if (depState === 'pending') {
     await requeue(job, stepRow, 5000); // wait and re-check
     return;
+  }
+
+  // 3b. Soft dependencies (ordering-only): wait until they're all terminal, but
+  // never block on them. Lets the roll-up run last yet still post when an
+  // upstream step flagged, so it can report the failure.
+  if (stepDef.softDependsOn && stepDef.softDependsOn.length > 0) {
+    const soft = await evaluateSoftDependencies(run.id, stepDef.softDependsOn);
+    if (soft === 'waiting') {
+      await requeue(job, stepRow, 5000);
+      return;
+    }
   }
 
   // 4. Mark running, increment attempts, write an info event.
@@ -163,6 +177,15 @@ async function evaluateDependencies(runId: string, deps: string[]): Promise<DepS
   if (statuses.some((s) => BROKEN.has(s))) return 'broken';
   if (statuses.every((s) => SATISFIED.has(s))) return 'ready';
   return 'pending';
+}
+
+/** Soft deps are 'ready' once every one present on the run is terminal (in any
+ *  state, success or failure); otherwise 'waiting'. Absent deps are ignored. */
+async function evaluateSoftDependencies(runId: string, deps: string[]): Promise<'ready' | 'waiting'> {
+  const { data, error } = await db().from('run_steps').select('step_key, status').eq('run_id', runId).in('step_key', deps);
+  if (error) throw new Error(`evaluateSoftDependencies: ${error.message}`);
+  if (!data || data.length === 0) return 'ready';
+  return data.every((r) => ALL_TERMINAL.has(r.status as StepStatus)) ? 'ready' : 'waiting';
 }
 
 function costlyUnlock(run: OnboardingRun): { ok: true } | { ok: false; reason: string } {
