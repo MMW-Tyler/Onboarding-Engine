@@ -239,7 +239,7 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   if (driveId) lines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${link(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
 
   const locId = r.ghl_location_id as string | undefined;
-  if (locId) lines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  id \`${locId}\``);
+  if (locId) lines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${link(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
 
   // Website platform check (the one piece of net-new info vs. the intake form).
   const platform = (profile.detected_platform as string | undefined) || 'unknown';
