@@ -125,19 +125,24 @@ function parseApiError(xml: string): string | null {
 
 /** Strip the registrable domain suffix to get the Namecheap relative Host. */
 function relativeHost(fqdn: string, domain: string): string {
-  const f = fqdn.replace(/\.$/, '').toLowerCase();
+  const f = (fqdn ?? '').replace(/\.$/, '').toLowerCase();
   const d = domain.toLowerCase();
-  if (f === d) return '@';
+  if (!f || f === d) return '@';
   if (f.endsWith(`.${d}`)) return f.slice(0, -(d.length + 1));
-  return fqdn; // already relative, or unexpected - pass through
+  return f; // already relative, or unexpected - pass through
 }
 
-/** Convert a Mailgun DNS record into a Namecheap host record. */
+/**
+ * Convert a Mailgun DNS record into a Namecheap host record. Mailgun's receiving
+ * (MX) records omit `name` - they apply to the sending domain itself (mg.<domain>),
+ * so fall back to that when name is absent.
+ */
 function mailgunToDns(rec: MailgunDnsRecord, domain: string): DnsRecord {
+  const name = rec.name && rec.name.trim() ? rec.name : `mg.${domain}`;
   return {
-    Type: rec.record_type.toUpperCase(),
-    Host: relativeHost(rec.name, domain),
-    Address: rec.value,
+    Type: (rec.record_type ?? 'TXT').toUpperCase(),
+    Host: relativeHost(name, domain),
+    Address: rec.value ?? '',
     MXPref: rec.priority ? Number(rec.priority) : undefined,
     TTL: 1800,
   };
