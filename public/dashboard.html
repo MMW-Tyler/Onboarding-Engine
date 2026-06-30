@@ -254,6 +254,7 @@ async function loadDetail() {
       '<h2 class="detail-head" style="border:none;color:var(--ink);margin:0;">' + (run.client_name || '(no name)') + '</h2>' +
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
       '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
+      '<button class="tiny" onclick="authorizePurchase()" title="Consent to a REAL domain purchase for this run (needed alongside NAMECHEAP_LIVE for the costly step to run)">authorize purchase</button>' +
       '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset EVERY step and re-run the whole run live. Use only to promote a dry run — re-running a live run re-creates Drive/ClickUp assets.">re-run live</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
       '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;letter-spacing:.05em;">' +
@@ -284,6 +285,14 @@ async function retryFlagged() {
   try { const r = await api('/runs/' + selectedRun + '/retry-flagged', { method: 'POST' });
     toast('retrying ' + (r.retried || []).length + ' flagged'); setTimeout(loadDetail, 600); }
   catch (e) { toast('error: ' + e.message); }
+}
+
+async function authorizePurchase() {
+  if (!confirm('Authorize a REAL domain purchase for this run?\n\nThis is the per-run consent. The costly namecheap.purchase_domain step will buy the domain on the next run/resume IF NAMECHEAP_LIVE=true and the step is not pinned dry.')) return;
+  try {
+    await api('/runs/' + selectedRun + '/authorize-purchase', { method: 'POST' });
+    toast('purchase authorized for this run');
+  } catch (e) { toast('error: ' + e.message); }
 }
 
 async function resumeRun() {

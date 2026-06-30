@@ -113,7 +113,8 @@ export const warmupSteps: Step[] = [
     key: 'warmup.enroll',
     wave: 1,
     safetyClass: 'reversible-write',
-    dependsOn: ['mailgun.add_domain'],
+    // After the sending DNS is in place, so the domain is ready to warm.
+    dependsOn: ['dns.mailgun_records'],
     maxAttempts: 5,
     retryProfile: 'flaky',
     isApplicable: () => true,

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun } from '../engine/runs.js';
+import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, authorizePurchase } from '../engine/runs.js';
 import { redact } from '../redact.js';
 
 export const runsRouter = Router();
@@ -120,6 +120,17 @@ runsRouter.post('/runs/:id/resume', async (req, res) => {
   try {
     const resumed = await resumeRun(req.params.id);
     return res.json({ ok: true, resumed });
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** POST /runs/:id/authorize-purchase - per-run consent to buy the domain (the
+ *  second key of the costly two-key unlock; NAMECHEAP_LIVE is the first). */
+runsRouter.post('/runs/:id/authorize-purchase', async (req, res) => {
+  try {
+    const result = await authorizePurchase(req.params.id);
+    return res.json({ ok: true, ...result });
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

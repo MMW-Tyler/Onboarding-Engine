@@ -138,71 +138,44 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   // guard here - it would silently mask runner failures.
 
   const domain = resolveDomain(ctx);
-  const profile = profileOf(ctx.run);
 
-  // TODO(production): Registrant contact details below are populated from the
-  // client profile as best-effort placeholders. Before enabling live purchases
-  // you MUST confirm all required registrant fields (RegistrantFirstName,
-  // RegistrantLastName, RegistrantAddress1, RegistrantCity, RegistrantStateProvince,
-  // RegistrantPostalCode, RegistrantCountry, RegistrantPhone, RegistrantEmailAddress)
-  // are accurate and legally correct. Using placeholder values may result in
-  // ICANN compliance failures or domain suspension.
+  // Registrant = MMW agency WHOIS contact from config (one set for every domain).
+  // Validate up front so a live purchase fails clearly instead of registering a
+  // domain with placeholder/incomplete WHOIS (ICANN suspension risk).
+  const r = config.namecheap.registrant();
+  const missing = (['firstName', 'lastName', 'address1', 'city', 'state', 'postalCode', 'country', 'phone', 'email'] as const)
+    .filter((k) => !r[k] || !String(r[k]).trim());
+  if (missing.length > 0) {
+    throw new Error(
+      `namecheap: registrant not configured - set NAMECHEAP_REGISTRANT_* (missing: ${missing.join(', ')}). ` +
+      `Refusing to register ${domain} with incomplete WHOIS.`,
+    );
+  }
 
-  // Split office_name into first/last as a best-effort placeholder.
-  const officeName = profile.office_name ?? ctx.run.client_name ?? 'Client';
-  const nameParts = officeName.split(/\s+/);
-  const firstName = nameParts[0] ?? 'Client';
-  const lastName = nameParts.slice(1).join(' ') || 'Client';
-
-  // Build registrant contact params from profile NAP fields.
-  const registrantParams: Record<string, string> = {
-    DomainName: domain,
-    Years: '1',
-
-    // Registrant
-    RegistrantFirstName: firstName,
-    RegistrantLastName: lastName,
-    RegistrantAddress1: profile.nap_address ?? '123 Main St',
-    RegistrantCity: profile.nap_city ?? 'Unknown',
-    RegistrantStateProvince: profile.nap_state ?? 'CA',
-    RegistrantPostalCode: profile.nap_zip ?? '00000',
-    RegistrantCountry: 'US',
-    RegistrantPhone: profile.nap_phone ?? '+1.0000000000',
-    RegistrantEmailAddress: profile.doctor_email ?? 'contact@example.com',
-
-    // Tech contact (mirror registrant)
-    TechFirstName: firstName,
-    TechLastName: lastName,
-    TechAddress1: profile.nap_address ?? '123 Main St',
-    TechCity: profile.nap_city ?? 'Unknown',
-    TechStateProvince: profile.nap_state ?? 'CA',
-    TechPostalCode: profile.nap_zip ?? '00000',
-    TechCountry: 'US',
-    TechPhone: profile.nap_phone ?? '+1.0000000000',
-    TechEmailAddress: profile.doctor_email ?? 'contact@example.com',
-
-    // Admin contact (mirror registrant)
-    AdminFirstName: firstName,
-    AdminLastName: lastName,
-    AdminAddress1: profile.nap_address ?? '123 Main St',
-    AdminCity: profile.nap_city ?? 'Unknown',
-    AdminStateProvince: profile.nap_state ?? 'CA',
-    AdminPostalCode: profile.nap_zip ?? '00000',
-    AdminCountry: 'US',
-    AdminPhone: profile.nap_phone ?? '+1.0000000000',
-    AdminEmailAddress: profile.doctor_email ?? 'contact@example.com',
-
-    // AuxBilling contact (mirror registrant)
-    AuxBillingFirstName: firstName,
-    AuxBillingLastName: lastName,
-    AuxBillingAddress1: profile.nap_address ?? '123 Main St',
-    AuxBillingCity: profile.nap_city ?? 'Unknown',
-    AuxBillingStateProvince: profile.nap_state ?? 'CA',
-    AuxBillingPostalCode: profile.nap_zip ?? '00000',
-    AuxBillingCountry: 'US',
-    AuxBillingPhone: profile.nap_phone ?? '+1.0000000000',
-    AuxBillingEmailAddress: profile.doctor_email ?? 'contact@example.com',
+  // One contact, mirrored across Registrant / Tech / Admin / AuxBilling.
+  const contact: Record<string, string> = {
+    FirstName: r.firstName,
+    LastName: r.lastName,
+    Address1: r.address1,
+    City: r.city,
+    StateProvince: r.state,
+    PostalCode: r.postalCode,
+    Country: r.country,
+    Phone: r.phone,
+    EmailAddress: r.email,
   };
+  const registrantParams: Record<string, string> = { DomainName: domain, Years: '1' };
+  for (const role of ['Registrant', 'Tech', 'Admin', 'AuxBilling']) {
+    for (const [field, value] of Object.entries(contact)) {
+      registrantParams[`${role}${field}`] = value;
+    }
+  }
+  // Organization is optional; include it on all roles when set.
+  if (r.organization && r.organization.trim()) {
+    for (const role of ['Registrant', 'Tech', 'Admin', 'AuxBilling']) {
+      registrantParams[`${role}OrganizationName`] = r.organization;
+    }
+  }
 
   const createRes = await callApi(
     ctx,

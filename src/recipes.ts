@@ -24,9 +24,9 @@ export const recipes: Record<string, string[]> = {
     'clickup.master_tracker',
     'drive.create_folders',
     'namecheap.purchase_domain',
-    'dns.ghl_records',
-    'dns.mailgun_records',
     'mailgun.add_domain',
+    'dns.mailgun_records',
+    'dns.ghl_records',
     'warmup.enroll',
     'ghl.provision_subaccount',
     // One consolidated Slack post (assets + links + detected platform). Replaces
@@ -39,21 +39,22 @@ export const recipes: Record<string, string[]> = {
   device_client_setup: [
     'ghl.provision_subaccount',
     'namecheap.purchase_domain',
-    'dns.ghl_records',
-    'dns.mailgun_records',
     'mailgun.add_domain',
+    'dns.mailgun_records',
+    'dns.ghl_records',
     'warmup.enroll',
   ],
 
   // Text-blast-only client
   ghl_only: ['ghl.provision_subaccount'],
 
-  // Email stack for an existing client
+  // Email stack for an existing client (also the isolated domain-purchase test
+  // bundle: buy -> mailgun -> DNS -> warmup, nothing else).
   domain_warmup_only: [
     'namecheap.purchase_domain',
-    'dns.ghl_records',
-    'dns.mailgun_records',
     'mailgun.add_domain',
+    'dns.mailgun_records',
+    'dns.ghl_records',
     'warmup.enroll',
   ],
 

@@ -1,22 +1,27 @@
 import type { Step, StepContext } from '../../types.js';
 import { callApi } from '../../lib/http.js';
+import { config } from '../../config.js';
 import { namecheapUrl } from '../../lib/namecheap.js';
 import { simulated } from './util.js';
+import type { MailgunDnsRecord } from './mailgun.js';
 
 /**
  * DNS workers (spec section 08: dns.ghl_records / dns.mailgun_records).
  *
- * Sets DNS host records on the freshly-purchased Namecheap domain via the
- * namecheap.domains.dns.setHosts command. Both steps are reversible-write:
- * they overwrite host records but the domain can be reconfigured at any time.
+ * Sets DNS host records on the freshly-purchased Namecheap domain. Both steps
+ * are reversible-write.
  *
- * IMPORTANT setHosts caveat: this command REPLACES all host records on the
- * domain. For M4 this is acceptable because the domain is freshly purchased
- * and has no existing records. In production the two steps (GHL + Mailgun)
- * must be merged -- call getHosts first, union the new records with existing
- * ones, then call setHosts with the combined set so neither step clobbers the
- * other's records.
- * TODO(production): implement getHosts + merge before live use.
+ * setHosts REPLACES every host record on the domain, so to avoid the two steps
+ * clobbering each other (and to be safe to re-run) each step now:
+ *   1. getHosts -> read the domain's current records,
+ *   2. drops any existing record with the same Host+Type as one it's adding,
+ *   3. setHosts the union (kept + new).
+ * The two steps are also serialized (ghl depends on dns.mailgun_records) so they
+ * never read-modify-write concurrently.
+ *
+ * The Mailgun records are NOT hardcoded: mailgun.add_domain stores the real
+ * records (incl. the actual DKIM key) Mailgun returned on the run, and
+ * dns.mailgun_records translates those into Namecheap host records.
  */
 
 // ---------------------------------------------------------------------------
@@ -24,7 +29,7 @@ import { simulated } from './util.js';
 // ---------------------------------------------------------------------------
 
 interface DnsRecord {
-  Type: 'A' | 'CNAME' | 'TXT' | 'MX' | 'URL';
+  Type: string; // A | AAAA | CNAME | TXT | MX | URL | URL301 | FRAME | NS ...
   Host: string;
   Address: string;
   MXPref?: number;
@@ -32,56 +37,7 @@ interface DnsRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Record sets
-// ---------------------------------------------------------------------------
-
-/**
- * GoHighLevel branded-domain DNS records.
- * Sets a CNAME so the client's sub-domain resolves through GHL's CDN/proxy.
- *
- * TODO(production): confirm the real GHL branded-domain CNAME target with GHL
- * support or from the sub-account's Custom Domains settings. The value
- * 'clientclub.io' below is a placeholder derived from GHL documentation and
- * must be verified before these records go live.
- */
-const GHL_RECORDS: DnsRecord[] = [
-  // Primary branded domain CNAME (app.domain.com -> GHL endpoint).
-  { Type: 'CNAME', Host: 'app', Address: 'clientclub.io', TTL: 1800 },
-];
-
-/**
- * Mailgun sending DNS records.
- *
- * TODO(production): The DKIM TXT value and exact subdomain hosts (mg vs root)
- * must come from the Mailgun add_domain API response for the specific sending
- * domain. The values below are correct structural placeholders for the 'mg'
- * subdomain sending strategy but DKIM_PLACEHOLDER must be replaced with the
- * key returned by Mailgun. Wire this step to run after a mailgun.add_domain
- * step and read ctx.run.mailgun_dkim_value (or similar) from the run row.
- */
-const MAILGUN_RECORDS: DnsRecord[] = [
-  // SPF record on the mg subdomain.
-  { Type: 'TXT', Host: 'mg', Address: 'v=spf1 include:mailgun.org ~all', TTL: 1800 },
-
-  // DKIM record -- value must come from Mailgun add_domain response.
-  // TODO(production): replace DKIM_PLACEHOLDER with the real base64 public key.
-  {
-    Type: 'TXT',
-    Host: 'k1._domainkey.mg',
-    Address: 'k=rsa; p=DKIM_PLACEHOLDER',
-    TTL: 1800,
-  },
-
-  // Mailgun inbound MX records (required for routing / tracking).
-  { Type: 'MX', Host: 'mg', Address: 'mxa.mailgun.org', MXPref: 10, TTL: 1800 },
-  { Type: 'MX', Host: 'mg', Address: 'mxb.mailgun.org', MXPref: 10, TTL: 1800 },
-
-  // Tracking / click CNAME.
-  { Type: 'CNAME', Host: 'email.mg', Address: 'mailgun.org', TTL: 1800 },
-];
-
-// ---------------------------------------------------------------------------
-// Namecheap DNS URL builder
+// Namecheap domain / URL helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -95,6 +51,12 @@ function splitDomain(domain: string): { sld: string; tld: string } {
   return { sld: domain.slice(0, dot), tld: domain.slice(dot + 1) };
 }
 
+/** Build the getHosts URL for a domain. */
+function getHostsUrl(domain: string): string {
+  const { sld, tld } = splitDomain(domain);
+  return namecheapUrl('namecheap.domains.dns.getHosts', { SLD: sld, TLD: tld });
+}
+
 /**
  * Build the Namecheap setHosts URL for all provided records.
  * Each record is numbered 1..N and yields HostNameN/RecordTypeN/AddressN/
@@ -102,9 +64,6 @@ function splitDomain(domain: string): { sld: string; tld: string } {
  */
 function setHostsUrl(domain: string, records: DnsRecord[]): string {
   const { sld, tld } = splitDomain(domain);
-
-  // Command-specific params only; auth + ClientIp + relay routing are handled by
-  // the shared namecheapUrl helper (src/lib/namecheap.ts).
   const extra: Record<string, string> = { SLD: sld, TLD: tld };
   records.forEach((rec, i) => {
     const n = String(i + 1);
@@ -114,17 +73,44 @@ function setHostsUrl(domain: string, records: DnsRecord[]): string {
     extra[`MXPref${n}`] = rec.MXPref !== undefined ? String(rec.MXPref) : '10';
     extra[`TTL${n}`] = rec.TTL !== undefined ? String(rec.TTL) : '1800';
   });
-
   return namecheapUrl('namecheap.domains.dns.setHosts', extra);
 }
 
 // ---------------------------------------------------------------------------
-// XML success check
+// XML parsing
 // ---------------------------------------------------------------------------
+
+/** Parse the <host .../> elements from a getHosts response into records. */
+function parseHosts(xml: string): DnsRecord[] {
+  const records: DnsRecord[] = [];
+  const re = /<host\b([^>]*)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const attrs = m[1]!;
+    const attr = (name: string) => attrs.match(new RegExp(`${name}\\s*=\\s*"([^"]*)"`, 'i'))?.[1];
+    const host = attr('Name');
+    const type = attr('Type');
+    const address = attr('Address');
+    if (!host || !type) continue;
+    records.push({
+      Host: host,
+      Type: type,
+      Address: address ?? '',
+      MXPref: attr('MXPref') ? Number(attr('MXPref')) : undefined,
+      TTL: attr('TTL') ? Number(attr('TTL')) : undefined,
+    });
+  }
+  return records;
+}
 
 /** Namecheap setHosts returns IsSuccess="true" inside the CommandResponse. */
 function parseSetHostsSuccess(xml: string): boolean {
   return /IsSuccess\s*=\s*"true"/i.test(xml);
+}
+
+/** getHosts signals overall success with Status="OK". */
+function parseApiStatus(xml: string): boolean {
+  return /Status\s*=\s*"OK"/i.test(xml);
 }
 
 /** Extract first Error text from the response if present. */
@@ -134,58 +120,126 @@ function parseApiError(xml: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Shared runReal / runDry builders
+// Merge helper: getHosts -> union(kept, new) -> setHosts
 // ---------------------------------------------------------------------------
 
-/**
- * Execute setHosts for the given record set against the domain on ctx.run.
- * Throws if the domain is missing or the API reports failure.
- */
-async function setHostsReal(
-  ctx: StepContext,
-  records: DnsRecord[],
-  type: 'ghl' | 'mailgun',
-): Promise<Record<string, unknown>> {
-  const domain = ctx.run.domain;
-  if (!domain) throw new Error('dns: run has no domain yet');
+/** Strip the registrable domain suffix to get the Namecheap relative Host. */
+function relativeHost(fqdn: string, domain: string): string {
+  const f = fqdn.replace(/\.$/, '').toLowerCase();
+  const d = domain.toLowerCase();
+  if (f === d) return '@';
+  if (f.endsWith(`.${d}`)) return f.slice(0, -(d.length + 1));
+  return fqdn; // already relative, or unexpected - pass through
+}
 
-  const url = setHostsUrl(domain, records);
-  const res = await callApi(ctx, url, 'namecheap.domains.dns.setHosts');
-
-  const success = parseSetHostsSuccess(res.raw);
-  if (!success) {
-    const errMsg = parseApiError(res.raw) ?? 'unknown error from Namecheap setHosts';
-    throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${errMsg}`);
-  }
-
-  return { domain, records: records.length, type };
+/** Convert a Mailgun DNS record into a Namecheap host record. */
+function mailgunToDns(rec: MailgunDnsRecord, domain: string): DnsRecord {
+  return {
+    Type: rec.record_type.toUpperCase(),
+    Host: relativeHost(rec.name, domain),
+    Address: rec.value,
+    MXPref: rec.priority ? Number(rec.priority) : undefined,
+    TTL: 1800,
+  };
 }
 
 /**
- * Dry-run: log intended records via logEvent, return simulated output.
- * Never calls setHosts.
+ * Apply records to the domain without clobbering unrelated host records:
+ * read current hosts, drop any with the same Host+Type as an incoming record,
+ * then setHosts the union.
  */
-async function setHostsDry(
-  ctx: StepContext,
-  records: DnsRecord[],
-  type: 'ghl' | 'mailgun',
-): Promise<Record<string, unknown>> {
-  const domain = ctx.run.domain;
-  if (!domain) throw new Error('dns: run has no domain yet');
+async function applyRecords(ctx: StepContext, domain: string, incoming: DnsRecord[], type: string): Promise<Record<string, unknown>> {
+  const getRes = await callApi(ctx, getHostsUrl(domain), 'namecheap.domains.dns.getHosts');
+  if (!parseApiStatus(getRes.raw)) {
+    throw new Error(`namecheap.domains.dns.getHosts failed (${type}): ${parseApiError(getRes.raw) ?? 'unknown error'}`);
+  }
+  const existing = parseHosts(getRes.raw);
 
-  // Log the intended records so they are visible in step_events for review.
-  await ctx.logEvent({
-    level: 'info',
-    endpoint: 'dns.intended',
-    response_body: records,
-  });
+  const incomingKeys = new Set(incoming.map((r) => `${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
+  const kept = existing.filter((r) => !incomingKeys.has(`${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
+  const merged = [...kept, ...incoming];
 
-  return simulated({
-    domain,
-    records: records.length,
-    type,
-    note: 'dry-run: intended records logged, not applied',
-  });
+  const setRes = await callApi(ctx, setHostsUrl(domain, merged), 'namecheap.domains.dns.setHosts');
+  if (!parseSetHostsSuccess(setRes.raw)) {
+    throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${parseApiError(setRes.raw) ?? 'unknown error'}`);
+  }
+
+  return { domain, type, added: incoming.length, kept: kept.length, total: merged.length };
+}
+
+function requireDomain(ctx: StepContext): string {
+  const d = ctx.run.domain as string | undefined;
+  if (!d) throw new Error('dns: run has no domain yet');
+  return d;
+}
+
+// ---------------------------------------------------------------------------
+// Mailgun records (real values from the mailgun.add_domain step)
+// ---------------------------------------------------------------------------
+
+/** Structural placeholders, shown only in dry-run logging. */
+const MAILGUN_PLACEHOLDER: DnsRecord[] = [
+  { Type: 'TXT', Host: 'mg', Address: 'v=spf1 include:mailgun.org ~all', TTL: 1800 },
+  { Type: 'TXT', Host: 'k1._domainkey.mg', Address: 'k=rsa; p=DKIM_FROM_MAILGUN', TTL: 1800 },
+  { Type: 'MX', Host: 'mg', Address: 'mxa.mailgun.org', MXPref: 10, TTL: 1800 },
+  { Type: 'MX', Host: 'mg', Address: 'mxb.mailgun.org', MXPref: 10, TTL: 1800 },
+  { Type: 'CNAME', Host: 'email.mg', Address: 'mailgun.org', TTL: 1800 },
+];
+
+/** Read the records mailgun.add_domain stored on the run, converted for Namecheap. */
+function mailgunRecordsFromRun(ctx: StepContext, domain: string): DnsRecord[] {
+  const profile = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
+  const sending = (profile.mailgun_sending_dns ?? []) as MailgunDnsRecord[];
+  const receiving = (profile.mailgun_receiving_dns ?? []) as MailgunDnsRecord[];
+  return [...sending, ...receiving].map((r) => mailgunToDns(r, domain));
+}
+
+async function mailgunDnsReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const domain = requireDomain(ctx);
+  const records = mailgunRecordsFromRun(ctx, domain);
+  if (records.length === 0) {
+    throw new Error('dns.mailgun_records: no Mailgun records on the run - mailgun.add_domain must run (live) first');
+  }
+  return applyRecords(ctx, domain, records, 'mailgun');
+}
+
+async function mailgunDnsDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  const domain = requireDomain(ctx);
+  // Prefer real records if mailgun already ran; else show the structural shape.
+  const real = mailgunRecordsFromRun(ctx, domain);
+  const records = real.length ? real : MAILGUN_PLACEHOLDER;
+  await ctx.logEvent({ level: 'info', endpoint: 'dns.intended', response_body: records });
+  return simulated({ domain, type: 'mailgun', records: records.length, source: real.length ? 'mailgun' : 'placeholder', note: 'dry-run: intended records logged, not applied' });
+}
+
+// ---------------------------------------------------------------------------
+// GHL branded-domain record (from config; skips when not configured)
+// ---------------------------------------------------------------------------
+
+function ghlRecord(): DnsRecord | null {
+  const { host, type, target } = config.ghl.brandedDns();
+  if (!target || !target.trim()) return null;
+  return { Type: type, Host: host, Address: target.trim(), TTL: 1800 };
+}
+
+async function ghlDnsReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const domain = requireDomain(ctx);
+  const rec = ghlRecord();
+  if (!rec) {
+    await ctx.logEvent({ level: 'warn', endpoint: 'dns.ghl_records', response_body: { skipped: 'GHL_BRANDED_DNS_TARGET not set' } });
+    return { domain, type: 'ghl', skipped: true, reason: 'no_target_configured' };
+  }
+  return applyRecords(ctx, domain, [rec], 'ghl');
+}
+
+async function ghlDnsDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  const domain = requireDomain(ctx);
+  const rec = ghlRecord();
+  if (!rec) {
+    return simulated({ domain, type: 'ghl', skipped: true, reason: 'no_target_configured', note: 'set GHL_BRANDED_DNS_TARGET to enable' });
+  }
+  await ctx.logEvent({ level: 'info', endpoint: 'dns.intended', response_body: [rec] });
+  return simulated({ domain, type: 'ghl', records: 1, note: 'dry-run: intended records logged, not applied' });
 }
 
 // ---------------------------------------------------------------------------
@@ -194,25 +248,27 @@ async function setHostsDry(
 
 export const dnsSteps: Step[] = [
   {
-    key: 'dns.ghl_records',
-    wave: 1,
-    safetyClass: 'reversible-write',
-    dependsOn: ['namecheap.purchase_domain'],
-    maxAttempts: 5,
-    retryProfile: 'flaky',
-    isApplicable: () => true,
-    runReal: (ctx) => setHostsReal(ctx, GHL_RECORDS, 'ghl'),
-    runDry: (ctx) => setHostsDry(ctx, GHL_RECORDS, 'ghl'),
-  },
-  {
     key: 'dns.mailgun_records',
     wave: 1,
     safetyClass: 'reversible-write',
-    dependsOn: ['namecheap.purchase_domain'],
+    // After Mailgun, so we have the real DKIM/SPF/MX records to write.
+    dependsOn: ['mailgun.add_domain'],
     maxAttempts: 5,
     retryProfile: 'flaky',
     isApplicable: () => true,
-    runReal: (ctx) => setHostsReal(ctx, MAILGUN_RECORDS, 'mailgun'),
-    runDry: (ctx) => setHostsDry(ctx, MAILGUN_RECORDS, 'mailgun'),
+    runReal: mailgunDnsReal,
+    runDry: mailgunDnsDry,
+  },
+  {
+    key: 'dns.ghl_records',
+    wave: 1,
+    safetyClass: 'reversible-write',
+    // Serialized after the Mailgun DNS write so the two never race on setHosts.
+    dependsOn: ['dns.mailgun_records'],
+    maxAttempts: 5,
+    retryProfile: 'flaky',
+    isApplicable: () => true,
+    runReal: ghlDnsReal,
+    runDry: ghlDnsDry,
   },
 ];

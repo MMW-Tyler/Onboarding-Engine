@@ -82,6 +82,22 @@ export const config = {
     // all Namecheap calls route through it so they leave from a whitelisted IP.
     relayUrl: () => optional('NAMECHEAP_RELAY_URL'),
     relaySecret: () => optional('NAMECHEAP_RELAY_SECRET'),
+    // MMW agency WHOIS / registrant contact, applied to every domain we buy.
+    // Phone must be in Namecheap's +NNN.NNNNNNNNNN format. Country is ISO-2.
+    // Validated at purchase time (a live buy fails clearly if any are missing)
+    // so we never register a domain with placeholder WHOIS.
+    registrant: () => ({
+      firstName: optional('NAMECHEAP_REGISTRANT_FIRST_NAME'),
+      lastName: optional('NAMECHEAP_REGISTRANT_LAST_NAME'),
+      organization: optional('NAMECHEAP_REGISTRANT_ORGANIZATION'),
+      address1: optional('NAMECHEAP_REGISTRANT_ADDRESS1'),
+      city: optional('NAMECHEAP_REGISTRANT_CITY'),
+      state: optional('NAMECHEAP_REGISTRANT_STATE'),
+      postalCode: optional('NAMECHEAP_REGISTRANT_POSTAL_CODE'),
+      country: optional('NAMECHEAP_REGISTRANT_COUNTRY', 'US'),
+      phone: optional('NAMECHEAP_REGISTRANT_PHONE'),
+      email: optional('NAMECHEAP_REGISTRANT_EMAIL'),
+    }),
   },
   mailgun: {
     apiKey: () => required('MAILGUN_API_KEY'),
@@ -105,6 +121,16 @@ export const config = {
     companyId: () => optional('GHL_COMPANY_ID'),
     snapshotId: () => optional('GHL_SNAPSHOT_ID'),
     a2pFieldMap: () => optional('GHL_A2P_CUSTOM_FIELD_MAP'),
+    // GHL branded-domain DNS record written onto the client domain so a GHL
+    // funnel/site resolves through it. Get the exact host+target from the
+    // sub-account's Settings -> Domains. If target is unset, dns.ghl_records
+    // skips itself (rather than writing a placeholder). Most GHL setups use a
+    // CNAME; some use an A record to a GHL IP - set type accordingly.
+    brandedDns: () => ({
+      host: optional('GHL_BRANDED_DNS_HOST', 'app'),
+      type: optional('GHL_BRANDED_DNS_TYPE', 'CNAME').toUpperCase(),
+      target: optional('GHL_BRANDED_DNS_TARGET'),
+    }),
   },
   dataforseo: {
     login: () => required('DATAFORSEO_LOGIN'),

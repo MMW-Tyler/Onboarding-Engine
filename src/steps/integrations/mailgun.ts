@@ -1,4 +1,5 @@
 import type { Step, StepContext } from '../../types.js';
+import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
 import { simulated } from './util.js';
@@ -45,16 +46,39 @@ async function addDomainReal(ctx: StepContext): Promise<Record<string, unknown>>
     okStatuses: [409],
   });
 
-  // GET /v3/domains/{domain} — fetch verification state after create/upsert.
+  // GET /v3/domains/{domain} — fetch verification state + the exact DNS records
+  // (real DKIM key, SPF, tracking CNAME, inbound MX) Mailgun wants on this domain.
   const res = await callApi<any>(ctx, `${base}/v3/domains/${name}`, 'mailgun.domains.get', {
     method: 'GET',
     headers,
   });
 
+  const sending = (res.body?.sending_dns_records ?? []) as MailgunDnsRecord[];
+  const receiving = (res.body?.receiving_dns_records ?? []) as MailgunDnsRecord[];
+
+  // Persist the records so dns.mailgun_records writes the REAL values (not a
+  // placeholder DKIM). client_profile_json is the non-sensitive run scratchpad.
+  const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
+  await db().from('onboarding_runs').update({
+    client_profile_json: { ...existing, mailgun_sending_dns: sending, mailgun_receiving_dns: receiving },
+    updated_at: new Date().toISOString(),
+  }).eq('id', ctx.run.id);
+
   return {
     domain: name,
     state: res.body?.domain?.state ?? 'unknown',
+    sending_records: sending.length,
+    receiving_records: receiving.length,
   };
+}
+
+/** Shape of a Mailgun DNS record from the domains API. */
+export interface MailgunDnsRecord {
+  record_type: string;   // 'TXT' | 'CNAME' | 'MX'
+  name: string;          // FQDN, e.g. 'mg.example.com' or 'k1._domainkey.mg.example.com'
+  value: string;
+  priority?: string;     // present on MX records
+  valid?: string;
 }
 
 async function addDomainDry(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -76,7 +100,9 @@ export const mailgunSteps: Step[] = [
     key: 'mailgun.add_domain',
     wave: 1,
     safetyClass: 'reversible-write',
-    dependsOn: ['dns.mailgun_records'],
+    // Mailgun must run BEFORE DNS: creating the domain is what yields the real
+    // DKIM key + sending records that dns.mailgun_records then writes.
+    dependsOn: ['namecheap.purchase_domain'],
     maxAttempts: 5,
     retryProfile: 'flaky',
     isApplicable: () => true,
