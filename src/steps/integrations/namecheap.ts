@@ -48,7 +48,21 @@ function siteSource(ctx: StepContext): string {
   const fromProfile = profileOf(ctx.run).website_url ?? '';
   if (fromProfile.trim()) return fromProfile.trim();
   const fromRun = (ctx.run.domain as string | undefined) ?? '';
-  return fromRun.trim();
+  if (fromRun.trim()) return fromRun.trim();
+  // Manual domain_warmup_only runs skip normalize_intake, so the website only
+  // lives in the raw intake payload (e.g. the dashboard's "Website URL" field).
+  return websiteFromIntake(ctx);
+}
+
+/** Pull a website-like value out of the raw intake payload (manual fire / webhook). */
+function websiteFromIntake(ctx: StepContext): string {
+  const raw = (ctx.run.raw_intake_json ?? {}) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    if (/website|url|site|domain/i.test(key) && typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
 }
 
 /** Brandable base label from a website/domain string, e.g. www.nezhat.org -> 'nezhat'. */
