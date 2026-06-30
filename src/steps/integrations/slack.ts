@@ -329,11 +329,11 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
 
     // Plain-English action notes so the whole team knows what to do next.
     if (k === 'dns.ghl_records' && done(s) && purchasedDomain) {
-      stackLines.push(`        ↳ *Action:* the branded domain is *${brandedHost}.${purchasedDomain}*. In this client's GHL sub-account go to *Settings → Domains* and add *${brandedHost}.${purchasedDomain}* as the branded/custom domain.`);
+      stackLines.push(`        ↳ *Action:* the branded domain is *${brandedHost}.${purchasedDomain}*. In this client's GHL sub-account go to *Settings → Business Profile* and add *${brandedHost}.${purchasedDomain}* as the branded domain.`);
     }
     if (k === 'warmup.enroll' && done(s)) {
       const inbox = assignedInbox ? `*${assignedInbox}*` : 'the assigned inbox';
-      stackLines.push(`        ↳ *Action:* attach *${purchasedDomain || 'the new domain'}* to warmup inbox ${inbox}. Open this run in the dashboard and click *Warmup setup* to get the SMTP values to paste in.`);
+      stackLines.push(`        ↳ *Action:* the engine picked the next inbox in the rotation: ${inbox}. Attach *${purchasedDomain || 'the new domain'}* to it by opening this run in the dashboard and clicking *Warmup setup* for the SMTP values to paste in.`);
     }
   }
   const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
