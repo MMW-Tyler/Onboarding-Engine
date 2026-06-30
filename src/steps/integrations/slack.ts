@@ -188,6 +188,7 @@ const W1_ASSET_STEPS = [
   'dns.ghl_records',
   'dns.mailgun_records',
   'mailgun.add_domain',
+  'mailgun.verify',
   'warmup.enroll',
   'crawl.detect_platform',
 ];
@@ -300,12 +301,14 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
     ['mailgun.add_domain', 'Mailgun sending domain'],
     ['dns.mailgun_records', 'DNS (Mailgun records)'],
     ['dns.ghl_records', 'DNS (GHL branded)'],
+    ['mailgun.verify', 'Mailgun verification'],
     ['warmup.enroll', 'Inbox warmup'],
   ];
   const stackLines = STACK.map(([k, label]) => {
     const s = stat(k);
     let line = `${rollupEmoji(s)}  ${label}`;
     if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
+    if (k === 'mailgun.verify' && s === 'succeeded') line += `: ${out(k).verified ? 'verified' : `${out(k).state ?? 'pending'} (propagating)`}`;
     if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
     return line;
   });
@@ -370,7 +373,7 @@ export const slackSteps: Step[] = [
     softDependsOn: [
       'hubspot.upsert', 'clickup.clone_template', 'clickup.master_tracker',
       'drive.create_folders', 'ghl.provision_subaccount', 'crawl.detect_platform',
-      'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll',
+      'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'mailgun.verify', 'warmup.enroll',
     ],
     maxAttempts: 3, isApplicable: () => true, runReal: wave1RollupReal, runDry: wave1RollupDry,
   },

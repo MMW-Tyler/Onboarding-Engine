@@ -27,6 +27,7 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'dns.mailgun_records',
     'dns.ghl_records',
+    'mailgun.verify',
     'warmup.enroll',
     'ghl.provision_subaccount',
     // One consolidated Slack post (assets + links + detected platform). Replaces
@@ -42,6 +43,7 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'dns.mailgun_records',
     'dns.ghl_records',
+    'mailgun.verify',
     'warmup.enroll',
   ],
 
@@ -55,6 +57,7 @@ export const recipes: Record<string, string[]> = {
     'mailgun.add_domain',
     'dns.mailgun_records',
     'dns.ghl_records',
+    'mailgun.verify',
     'warmup.enroll',
   ],
 

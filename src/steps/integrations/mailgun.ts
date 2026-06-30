@@ -95,6 +95,36 @@ async function addDomainDry(ctx: StepContext): Promise<Record<string, unknown>> 
   return simulated({ domain: name, state: 'simulated' });
 }
 
+// --- verify (ask Mailgun to re-check the DNS records we wrote) ---
+
+async function verifyDomainReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const base = baseUrl();
+  const headers = authHeaders();
+  const name = sendingDomain(ctx);
+
+  // PUT /v3/domains/{domain}/verify - Mailgun re-checks DNS and flips the domain
+  // to "active" once SPF/DKIM resolve. Right after we set DNS it's usually still
+  // "unverified" (propagation), which is NOT a failure - we report state and let
+  // the run proceed; Mailgun also keeps re-checking on its own.
+  const res = await callApi<any>(ctx, `${base}/v3/domains/${name}/verify`, 'mailgun.domains.verify', {
+    method: 'PUT',
+    headers,
+  });
+  const state = res.body?.domain?.state ?? res.body?.state ?? 'unknown';
+  if (state !== 'active') {
+    await ctx.logEvent({ level: 'warn', endpoint: 'mailgun.domains.verify', parsed_error: `domain ${name} state=${state} (DNS may still be propagating; Mailgun will re-check)` });
+  }
+  return { domain: name, state, verified: state === 'active' };
+}
+
+async function verifyDomainDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  const base = baseUrl();
+  const headers = authHeaders();
+  const name = sendingDomain(ctx);
+  const res = await callApi<any>(ctx, `${base}/v3/domains/${name}`, 'mailgun.domains.get', { method: 'GET', headers });
+  return simulated({ domain: name, state: res.body?.domain?.state ?? 'unknown' });
+}
+
 export const mailgunSteps: Step[] = [
   {
     key: 'mailgun.add_domain',
@@ -108,5 +138,17 @@ export const mailgunSteps: Step[] = [
     isApplicable: () => true,
     runReal: addDomainReal,
     runDry: addDomainDry,
+  },
+  {
+    key: 'mailgun.verify',
+    wave: 1,
+    safetyClass: 'reversible-write',
+    // After the DNS records are written, ask Mailgun to verify them.
+    dependsOn: ['dns.mailgun_records'],
+    maxAttempts: 3,
+    retryProfile: 'flaky',
+    isApplicable: () => true,
+    runReal: verifyDomainReal,
+    runDry: verifyDomainDry,
   },
 ];

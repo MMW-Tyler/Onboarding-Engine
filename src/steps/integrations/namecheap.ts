@@ -11,10 +11,9 @@ import { profileOf, simulated } from './util.js';
  * Safety model:
  *   - runDry: calls only domains.check + users.getPricing (read-safe, free). Never
  *     calls domains.create. Never writes to the database.
- *   - runReal: calls domains.create ONLY because the runner has already verified the
- *     two-key unlock (NAMECHEAP_LIVE env + per-run unlock token) before dispatching
- *     any step whose safetyClass is 'costly'. This function may assume it is
- *     authorized to purchase.
+ *   - runReal: calls domains.create only after the runner verified NAMECHEAP_LIVE=true
+ *     (the global gate for 'costly' steps). Spend is bounded by the availability
+ *     check + the $20 price guard in this step; no per-run token is required.
  *
  * All calls use the Namecheap XML API (GET requests). Responses are XML strings;
  * we parse minimally with regex rather than adding an XML library dependency.
@@ -230,9 +229,8 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
 // ---------------------------------------------------------------------------
 
 async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  // NOTE: This function is only reached after the runner has verified both
-  // NAMECHEAP_LIVE=true and the per-run unlock token. Do not add a secondary
-  // guard here - it would silently mask runner failures.
+  // NOTE: reached after the runner verified NAMECHEAP_LIVE=true (the single
+  // global gate). Spend is bounded here by the availability check + price guard.
 
   // Build the candidate list (<base>patients.com, then <base>px.com) and buy the
   // FIRST one that is available. domains.check is a free read; only an available

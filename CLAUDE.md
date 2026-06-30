@@ -10,6 +10,18 @@
 - Every push to `main` auto-deploys to Render, so keep `main` working: run
   `npm run typecheck`, `npm run build`, and `npm test` before pushing.
 
+## Runtime defaults (IMPORTANT)
+
+- **Default RUN_MODE is `live`.** The engine runs for real unless RUN_MODE=dry is
+  set or the dashboard toggle is flipped to dry ("maintenance mode").
+- **Domain purchases auto-authorize.** The only gate on the costly
+  namecheap.purchase_domain step is NAMECHEAP_LIVE=true. There is no per-run
+  confirmation token (onboarding forms arrive unpredictably; a manual click per
+  purchase was an unwanted bottleneck). Spend is bounded by the $20 price guard
+  (NAMECHEAP_MAX_PRICE) + the availability check + the fixed domain pattern
+  (<base>px.com then <base>patients.com). To stop all purchases, set
+  NAMECHEAP_LIVE=false or RUN_MODE=dry.
+
 ## Deploy setup (managed by the user, not in code)
 
 - Render: one always-on web service, branch `main`, defined by `render.yaml`.

@@ -116,7 +116,7 @@ export async function processJob(job: JobRow): Promise<void> {
       finalStatus = 'simulated';
     } else if (stepDef.safetyClass === 'costly') {
       // live + costly -> two-key unlock or refuse (spec section 04).
-      const unlock = costlyUnlock(run);
+      const unlock = costlyUnlock();
       if (!unlock.ok) {
         await logEvent({ level: 'error', parsed_error: unlock.reason });
         await setStepStatus(stepRow.id, 'flagged', unlock.reason);
@@ -188,14 +188,15 @@ async function evaluateSoftDependencies(runId: string, deps: string[]): Promise<
   return data.every((r) => ALL_TERMINAL.has(r.status as StepStatus)) ? 'ready' : 'waiting';
 }
 
-function costlyUnlock(run: OnboardingRun): { ok: true } | { ok: false; reason: string } {
-  // Two-key unlock: provider live flag AND a per-run confirmation token (spec section 04).
+function costlyUnlock(): { ok: true } | { ok: false; reason: string } {
+  // Single global gate: NAMECHEAP_LIVE must be true. There is deliberately no
+  // per-run token requirement - onboarding forms arrive unpredictably and a
+  // manual click per purchase would be a bottleneck. Per-domain spend is bounded
+  // by the price guard ($20 cap) + availability check inside the step, and the
+  // domain to buy is a fixed pattern (<base>px.com / <base>patients.com), so a
+  // live run buys its domain automatically and safely.
   if (!config.namecheap.live) {
     return { ok: false, reason: 'Costly step refused: NAMECHEAP_LIVE is not true' };
-  }
-  const token = (run.raw_intake_json?.namecheap_confirm_token ?? '') as string;
-  if (!token) {
-    return { ok: false, reason: 'Costly step refused: missing per-run confirmation token' };
   }
   return { ok: true };
 }

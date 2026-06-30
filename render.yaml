@@ -12,7 +12,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: RUN_MODE
-        value: dry           # safe default; flip to live deliberately
+        value: live          # always-on live; set dry only for maintenance mode
       - key: NAMECHEAP_BASE_URL
         value: https://api.sandbox.namecheap.com
       - key: NAMECHEAP_LIVE

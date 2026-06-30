@@ -35,6 +35,7 @@ export const phase0Steps: Step[] = [
       'dns.ghl_records',
       'dns.mailgun_records',
       'mailgun.add_domain',
+      'mailgun.verify',
       'warmup.enroll',
       'ghl.provision_subaccount',
       'slack.wave1_rollup',

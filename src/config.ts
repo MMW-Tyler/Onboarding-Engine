@@ -20,7 +20,9 @@ function optional(name: string, fallback = ''): string {
   return process.env[name] ?? fallback;
 }
 
-let runMode: RunMode = (process.env.RUN_MODE === 'live' ? 'live' : 'dry');
+// Default to LIVE. The stack is tested and meant to run for real; set
+// RUN_MODE=dry (or flip the dashboard toggle) only to enter "maintenance mode".
+let runMode: RunMode = (process.env.RUN_MODE === 'dry' ? 'dry' : 'live');
 
 /**
  * Step keys that always run their dry path, even when the run mode is live.
