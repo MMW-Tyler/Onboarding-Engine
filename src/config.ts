@@ -82,6 +82,10 @@ export const config = {
     // all Namecheap calls route through it so they leave from a whitelisted IP.
     relayUrl: () => optional('NAMECHEAP_RELAY_URL'),
     relaySecret: () => optional('NAMECHEAP_RELAY_SECRET'),
+    // Hard price ceiling per domain (USD, incl. ICANN fee). A candidate that
+    // would cost more than this is flagged and NOT purchased - catches premium
+    // domains and price surprises. A normal .com is ~$18-19. Default $20.
+    maxPrice: () => Number(optional('NAMECHEAP_MAX_PRICE', '20')),
     // MMW agency WHOIS / registrant contact, applied to every domain we buy.
     // Phone must be in Namecheap's +NNN.NNNNNNNNNN format. Country is ISO-2.
     // Validated at purchase time (a live buy fails clearly if any are missing)

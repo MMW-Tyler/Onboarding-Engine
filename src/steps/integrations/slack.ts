@@ -255,10 +255,11 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   if (!channel) return { posted: false, reason: 'no slack channel on run' };
 
   const { data: stepRows } = await db()
-    .from('run_steps').select('step_key, status, output_json').eq('run_id', ctx.run.id).in('step_key', W1_ASSET_STEPS);
+    .from('run_steps').select('step_key, status, output_json, last_error').eq('run_id', ctx.run.id).in('step_key', W1_ASSET_STEPS);
   const byKey = new Map((stepRows ?? []).map((s) => [s.step_key as string, s]));
   const stat = (k: string) => (byKey.get(k)?.status as string | undefined);
   const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
+  const err = (k: string) => (byKey.get(k)?.last_error as string | undefined);
 
   const team = config.clickup.teamId();
   const profile = (r.client_profile_json ?? {}) as Record<string, any>;
@@ -292,9 +293,23 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   // crawl when the site was reachable.
   const platformLine = websiteSection(profile);
 
-  // Email/domain stack is pinned dry for now; note it so no one expects it live.
-  const emailKeys = ['namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll'];
-  const emailSimulated = emailKeys.every((k) => stat(k) === 'simulated' || stat(k) === undefined);
+  // Domain + email stack status: report each step's outcome, and on a failure
+  // (e.g. price over cap, insufficient funds) surface WHY right in the channel.
+  const STACK: [string, string][] = [
+    ['namecheap.purchase_domain', 'Domain purchase'],
+    ['mailgun.add_domain', 'Mailgun sending domain'],
+    ['dns.mailgun_records', 'DNS (Mailgun records)'],
+    ['dns.ghl_records', 'DNS (GHL branded)'],
+    ['warmup.enroll', 'Inbox warmup'],
+  ];
+  const stackLines = STACK.map(([k, label]) => {
+    const s = stat(k);
+    let line = `${rollupEmoji(s)}  ${label}`;
+    if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
+    if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
+    return line;
+  });
+  const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
 
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${client}`, emoji: true } },
@@ -303,10 +318,9 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
     { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${lines.join('\n')}` } },
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: platformLine } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: `:globe_with_meridians: *Domain & email stack*${allStackSimulated ? ' _(simulated — pinned dry)_' : ''}\n${stackLines.join('\n')}` } },
   ];
-  if (emailSimulated) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '🔵 Domain + email stack simulated (pinned dry — not provisioned yet)' }] });
-  }
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${r.id}\`` }] });
 
   // Plain-text fallback (notifications / clients that don't render blocks).

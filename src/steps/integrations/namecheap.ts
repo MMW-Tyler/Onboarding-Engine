@@ -96,23 +96,71 @@ function purchaseCandidates(ctx: StepContext): string[] {
 }
 
 /** Availability outcome for one domain, distinguishing API errors from "taken". */
-type CheckOutcome = { available: true } | { available: false } | { error: string };
+type CheckOutcome =
+  | { available: true; isPremium: boolean; premiumPrice: number; icannFee: number }
+  | { available: false }
+  | { error: string };
+
+/** Read a numeric attribute off the DomainCheckResult element. */
+function numAttr(el: string, name: string): number {
+  const m = el.match(new RegExp(`${name}\\s*=\\s*"([\\d.]+)"`, 'i'));
+  return m ? parseFloat(m[1]!) : 0;
+}
 
 /**
  * Interpret a domains.check response. A real result has a DomainCheckResult with
  * Available="true|false"; anything else (Status="ERROR", no result element,
  * relay mangling) is surfaced as an error rather than silently read as "taken".
+ * On an available result we also capture premium pricing for the price guard.
  */
 function checkOutcome(rawXml: string): CheckOutcome {
   const xml = unwrapRelayXml(rawXml);
   if (/Status\s*=\s*"ERROR"/i.test(xml)) {
     return { error: parseApiError(xml) ?? 'Namecheap API error' };
   }
-  const m = xml.match(/<DomainCheckResult[^>]*\bAvailable\s*=\s*"(true|false)"/i);
-  if (!m) {
+  const el = xml.match(/<DomainCheckResult[^>]*>/i)?.[0];
+  const avail = el?.match(/\bAvailable\s*=\s*"(true|false)"/i);
+  if (!el || !avail) {
     return { error: `unexpected domains.check response (no DomainCheckResult); first 200 chars: ${xml.slice(0, 200)}` };
   }
-  return m[1]!.toLowerCase() === 'true' ? { available: true } : { available: false };
+  if (avail[1]!.toLowerCase() !== 'true') return { available: false };
+  return {
+    available: true,
+    isPremium: /IsPremiumName\s*=\s*"true"/i.test(el),
+    premiumPrice: numAttr(el, 'PremiumRegistrationPrice'),
+    icannFee: numAttr(el, 'IcannFee'),
+  };
+}
+
+/** The standard 1-year .com registration price (YourPrice), via users.getPricing. */
+async function comRegisterPrice(ctx: StepContext): Promise<number | null> {
+  const res = await callApi(
+    ctx,
+    ncUrl('namecheap.users.getPricing', { ProductType: 'DOMAIN', ProductCategory: 'REGISTER', ActionName: 'REGISTER', ProductName: 'com' }),
+    'namecheap.users.getPricing',
+  );
+  const xml = unwrapRelayXml(res.raw);
+  const seg = xml.match(/<Price\b[^>]*\bDuration="1"[^>]*\/?>/i)?.[0];
+  if (!seg) {
+    const fallback = parsePrice(xml);
+    return fallback ? parseFloat(fallback) : null;
+  }
+  const yp = seg.match(/YourPrice="([\d.]+)"/i)?.[1] ?? seg.match(/\bPrice="([\d.]+)"/i)?.[1];
+  return yp ? parseFloat(yp) : null;
+}
+
+/**
+ * Estimated total cost (USD) for registering a domain, for the price guard.
+ * Premium domains use their premium price; regular domains use the .com price.
+ * ICANN fee is added on top. Returns null only if a non-premium price can't be
+ * determined (caller decides whether to proceed).
+ */
+async function estimateCost(ctx: StepContext, outcome: Extract<CheckOutcome, { available: true }>): Promise<number | null> {
+  if (outcome.isPremium && outcome.premiumPrice > 0) {
+    return outcome.premiumPrice + outcome.icannFee;
+  }
+  const base = await comRegisterPrice(ctx);
+  return base === null ? null : base + outcome.icannFee;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +193,7 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
 
   // domains.check each candidate (free availability check; never charges).
   const checked: { domain: string; available: boolean | null; error?: string }[] = [];
+  let firstAvailable: Extract<CheckOutcome, { available: true }> | null = null;
   for (const domain of candidates) {
     const checkRes = await callApi(
       ctx,
@@ -152,25 +201,27 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
       'namecheap.domains.check',
     );
     const outcome = checkOutcome(checkRes.raw);
-    if ('error' in outcome) checked.push({ domain, available: null, error: outcome.error });
-    else checked.push({ domain, available: outcome.available });
+    if ('error' in outcome) { checked.push({ domain, available: null, error: outcome.error }); continue; }
+    checked.push({ domain, available: outcome.available });
+    if (outcome.available && !firstAvailable) firstAvailable = outcome;
   }
   const wouldPurchase = checked.find((c) => c.available === true)?.domain ?? null;
 
-  // users.getPricing - read-safe pricing lookup; never charges.
-  const pricingRes = await callApi(
-    ctx,
-    ncUrl('namecheap.users.getPricing', { ProductType: 'DOMAIN' }),
-    'namecheap.users.getPricing',
-  );
-  const price = parsePrice(unwrapRelayXml(pricingRes.raw));
+  // Estimate cost + apply the same price cap the real purchase enforces.
+  const cap = config.namecheap.maxPrice();
+  const cost = firstAvailable ? await estimateCost(ctx, firstAvailable) : null;
+  const overCap = cost !== null && cost > cap;
 
   // NEVER call domains.create in dry mode.
   return simulated({
     candidates: checked,
-    would_purchase: wouldPurchase,
-    price,
-    note: 'dry-run: check + pricing only, no purchase',
+    would_purchase: overCap ? null : wouldPurchase,
+    estimated_cost: cost,
+    price_cap: cap,
+    over_cap: overCap,
+    note: overCap
+      ? `dry-run: ${wouldPurchase} ~$${cost!.toFixed(2)} exceeds $${cap} cap - would be flagged`
+      : 'dry-run: check + pricing only, no purchase',
   });
 }
 
@@ -191,6 +242,7 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.candidates', response_body: { candidates } });
 
   let domain = '';
+  let selected: Extract<CheckOutcome, { available: true }> | null = null;
   for (const candidate of candidates) {
     const checkRes = await callApi(
       ctx,
@@ -205,13 +257,23 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
     }
     if (outcome.available) {
       domain = candidate;
+      selected = outcome;
       break;
     }
   }
-  if (!domain) {
+  if (!domain || !selected) {
     throw new Error(`namecheap: neither candidate is available to purchase (tried: ${candidates.join(', ')}).`);
   }
   await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.target', response_body: { domain } });
+
+  // PRICE GUARD: never spend more than the configured cap on a single domain.
+  // Catches premium domains and any price surprise.
+  const cap = config.namecheap.maxPrice();
+  const cost = await estimateCost(ctx, selected);
+  await ctx.logEvent({ level: 'info', endpoint: 'namecheap.price.estimate', response_body: { domain, estimated_cost: cost, cap, premium: selected.isPremium } });
+  if (cost !== null && cost > cap) {
+    throw new Error(`namecheap: ${domain} would cost ~$${cost.toFixed(2)}, over the $${cap.toFixed(2)} cap${selected.isPremium ? ' (premium domain)' : ''} - flagged, not purchased.`);
+  }
 
   // Registrant = MMW agency WHOIS contact from config (one set for every domain).
   // Validate up front so a live purchase fails clearly instead of registering a
