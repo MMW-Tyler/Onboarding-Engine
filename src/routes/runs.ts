@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db } from '../supabase.js';
 import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, resendRollup } from '../engine/runs.js';
 import { buildWave1RollupText } from '../steps/integrations/slack.js';
+import { buildWarmupSetup } from '../steps/integrations/warmup.js';
 import { redact } from '../redact.js';
 
 export const runsRouter = Router();
@@ -132,6 +133,17 @@ runsRouter.get('/runs/:id/rollup-text', async (req, res) => {
   try {
     const text = await buildWave1RollupText(req.params.id);
     return res.json({ text });
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** GET /runs/:id/warmup-setup - paste-ready SMTP values for attaching the
+ *  client's domain to its assigned warmup inbox (creates/resets the Mailgun
+ *  SMTP credential; password not persisted). */
+runsRouter.get('/runs/:id/warmup-setup', async (req, res) => {
+  try {
+    return res.json(await buildWarmupSetup(req.params.id));
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

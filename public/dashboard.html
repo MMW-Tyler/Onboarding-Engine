@@ -176,6 +176,14 @@
   </div>
 </div>
 
+<div id="warmupModalBg" class="modal-bg" onclick="if(event.target===this)closeWarmupModal()">
+  <div class="modal">
+    <h3>Warmup Inbox setup</h3>
+    <div class="body" id="warmupBody"></div>
+    <div class="foot"><button onclick="closeWarmupModal()">Close</button></div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 let selectedRun = null;
@@ -301,6 +309,7 @@ async function loadDetail() {
       '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
       '<button class="tiny" onclick="postRollup()" title="Re-post this run\'s roll-up to its Slack channel">send roll-up</button>' +
       '<button class="tiny" onclick="copyRollup()" title="Show a copy-paste-ready roll-up message to drop into Slack manually">copy roll-up</button>' +
+      '<button class="tiny" onclick="warmupSetup()" title="Get the SMTP values to paste into the assigned Warmup Inbox for this client\'s domain">warmup setup</button>' +
       '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset EVERY step and re-run the whole run live. Use only to promote a dry run — re-running a live run re-creates Drive/ClickUp assets.">re-run live</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
       '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;letter-spacing:.05em;">' +
@@ -368,6 +377,37 @@ async function copyRollupText() {
     toast('roll-up selected — press Ctrl/Cmd+C to copy');
   }
 }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function warmupField(label, value) {
+  return '<label>' + label + '</label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:4px;">' +
+    '<input readonly value="' + escapeHtml(value) + '" style="flex:1;" />' +
+    '<button class="tiny" onclick="copyFieldVal(this)">copy</button></div>';
+}
+function copyFieldVal(btn) {
+  const inp = btn.previousElementSibling;
+  inp.focus(); inp.select();
+  try { navigator.clipboard.writeText(inp.value); toast('copied'); }
+  catch { document.execCommand('copy'); toast('press Ctrl/Cmd+C'); }
+}
+async function warmupSetup() {
+  try {
+    const r = await api('/runs/' + selectedRun + '/warmup-setup');
+    $('warmupBody').innerHTML =
+      '<p>' + escapeHtml(r.note) + '</p>' +
+      warmupField('Assigned inbox (open this one in Warmup Inbox)', r.assigned_inbox || '(run warmup.enroll first)') +
+      warmupField('SMTP Username', r.smtp.username) +
+      warmupField('SMTP Password', r.smtp.password) +
+      warmupField('SMTP Host', r.smtp.host) +
+      warmupField('SMTP Port', String(r.smtp.port)) +
+      warmupField('SMTP SSL/TLS', r.smtp.tls ? 'on' : 'off');
+    $('warmupModalBg').style.display = 'flex';
+  } catch (e) { toast('error: ' + e.message); }
+}
+function closeWarmupModal() { $('warmupModalBg').style.display = 'none'; }
 
 async function resumeRun() {
   try {

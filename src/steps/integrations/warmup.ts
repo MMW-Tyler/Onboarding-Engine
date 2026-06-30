@@ -3,6 +3,7 @@ import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
 import { simulated } from './util.js';
+import { ensureSmtpCredential } from './mailgun.js';
 
 /**
  * Warmup Inbox worker (spec section 08: warmup.enroll) - ROTATION model.
@@ -106,6 +107,40 @@ async function enrollDry(ctx: StepContext): Promise<Record<string, unknown>> {
     inbox_score: inbox?.score ?? null,
     rotation: `${pick.index + 1}/${pick.total}`,
   });
+}
+
+export interface WarmupSetup {
+  assigned_inbox: string | null;
+  smtp: { username: string; password: string; host: string; port: number; tls: boolean };
+  note: string;
+}
+
+/**
+ * On-demand "guided paste" details for attaching a client's new sending domain
+ * to its assigned warmup inbox. Creates/resets the Mailgun SMTP credential
+ * (info@mg.<domain>) and returns the exact values to paste into Warmup Inbox's
+ * SMTP Configuration. The password is NOT persisted - a fresh one is set each
+ * time this is opened.
+ */
+export async function buildWarmupSetup(runId: string): Promise<WarmupSetup> {
+  const { data: run } = await db()
+    .from('onboarding_runs').select('domain, client_profile_json').eq('id', runId).single();
+  if (!run) throw new Error('warmup-setup: no such run');
+  const domain = run.domain as string | undefined;
+  if (!domain) throw new Error('warmup-setup: run has no domain yet (purchase the domain first)');
+
+  const profile = (run.client_profile_json ?? {}) as Record<string, unknown>;
+  const assignedInbox = (profile.warmup_inbox as string | undefined) ?? null;
+
+  const sendingDomain = `mg.${domain}`;
+  const login = `info@${sendingDomain}`;
+  const password = await ensureSmtpCredential(sendingDomain, login);
+
+  return {
+    assigned_inbox: assignedInbox,
+    smtp: { username: login, password, host: 'smtp.mailgun.org', port: 587, tls: false },
+    note: 'In Warmup Inbox, open the assigned inbox -> SMTP Configuration, paste these values, leave IMAP as-is, and Save. A fresh password is generated each time you open this, so paste the current one.',
+  };
 }
 
 export const warmupSteps: Step[] = [

@@ -304,6 +304,12 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
 
   const platformLine = websiteSection(profile);
 
+  // Domain to reference in the human notes: the purchased one if we have it.
+  const purchasedDomain = (out('namecheap.purchase_domain').domain as string | undefined) || (r.domain as string | undefined) || '';
+  const brandedHost = config.ghl.brandedDns().host || 'go';
+  const assignedInbox = profile.warmup_inbox as string | undefined;
+  const done = (s: string | undefined) => s === 'succeeded' || s === 'simulated';
+
   const STACK: [string, string][] = [
     ['namecheap.purchase_domain', 'Domain purchase'],
     ['mailgun.add_domain', 'Mailgun sending domain'],
@@ -312,14 +318,24 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
     ['mailgun.verify', 'Mailgun verification'],
     ['warmup.enroll', 'Inbox warmup'],
   ];
-  const stackLines = STACK.map(([k, label]) => {
+  const stackLines: string[] = [];
+  for (const [k, label] of STACK) {
     const s = stat(k);
     let line = `${rollupEmoji(s)}  ${label}`;
     if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
     if (k === 'mailgun.verify' && s === 'succeeded') line += `: ${out(k).verified ? 'verified' : `${out(k).state ?? 'pending'} (propagating)`}`;
     if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
-    return line;
-  });
+    stackLines.push(line);
+
+    // Plain-English action notes so the whole team knows what to do next.
+    if (k === 'dns.ghl_records' && done(s) && purchasedDomain) {
+      stackLines.push(`        ↳ *Action:* the branded domain is *${brandedHost}.${purchasedDomain}*. In this client's GHL sub-account go to *Settings → Domains* and add *${brandedHost}.${purchasedDomain}* as the branded/custom domain.`);
+    }
+    if (k === 'warmup.enroll' && done(s)) {
+      const inbox = assignedInbox ? `*${assignedInbox}*` : 'the assigned inbox';
+      stackLines.push(`        ↳ *Action:* attach *${purchasedDomain || 'the new domain'}* to warmup inbox ${inbox}. Open this run in the dashboard and click *Warmup setup* to get the SMTP values to paste in.`);
+    }
+  }
   const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
 
   return { client, assetLines, platformLine, stackLines, allStackSimulated };
@@ -334,7 +350,7 @@ export async function buildWave1RollupText(runId: string): Promise<string> {
   const c = buildWave1Content(r, byKey, false);
   return [
     `✅ Wave 1 complete — ${c.client}`,
-    `Account setup is done. Wave 2 (AI research) kicks off when the Client MMW onboarding form arrives.`,
+    `Account setup is done. Lines marked "↳ Action" need a quick human step. Wave 2 (AI research) kicks off when the Client MMW onboarding form arrives.`,
     ``,
     `📦 Assets created`,
     ...c.assetLines,
@@ -357,7 +373,7 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   const c = buildWave1Content(r, byKey, true);
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${c.client}`, emoji: true } },
-    { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. *Wave 2* (AI research) kicks off when the Client MMW onboarding form arrives.` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. Lines marked *↳ Action* need a quick human step. *Wave 2* (AI research) kicks off when the Client MMW onboarding form arrives.` } },
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${c.assetLines.join('\n')}` } },
     { type: 'divider' },

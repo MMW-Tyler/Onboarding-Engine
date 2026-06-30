@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
@@ -93,6 +94,29 @@ async function addDomainDry(ctx: StepContext): Promise<Record<string, unknown>> 
   });
 
   return simulated({ domain: name, state: 'simulated' });
+}
+
+/**
+ * Create (or reset) a Mailgun SMTP credential and return its password. Used to
+ * hand Warmup Inbox a sending login (info@mg.<domain>) for the assigned inbox.
+ * Plain fetch (no step context) since it's called from an on-demand admin
+ * endpoint, not a step run. A fresh password is set each call.
+ */
+export async function ensureSmtpCredential(sendingDomain: string, login: string): Promise<string> {
+  const base = baseUrl();
+  const headers = { ...authHeaders(), 'content-type': 'application/x-www-form-urlencoded' };
+  const password = randomBytes(16).toString('hex');
+  const form = (o: Record<string, string>) => new URLSearchParams(o).toString();
+
+  // Create the credential (ignore "already exists"), then PUT to set our known
+  // password so we can show it for pasting.
+  await fetch(`${base}/v3/domains/${sendingDomain}/credentials`, { method: 'POST', headers, body: form({ login, password }) }).catch(() => {});
+  const res = await fetch(`${base}/v3/domains/${sendingDomain}/credentials/${encodeURIComponent(login)}`, { method: 'PUT', headers, body: form({ password }) });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`mailgun credential update failed (${res.status}): ${t.slice(0, 200)}`);
+  }
+  return password;
 }
 
 // --- verify (ask Mailgun to re-check the DNS records we wrote) ---
