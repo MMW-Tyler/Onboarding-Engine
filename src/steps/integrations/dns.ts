@@ -1,7 +1,7 @@
 import type { Step, StepContext } from '../../types.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { namecheapUrl } from '../../lib/namecheap.js';
+import { namecheapUrl, unwrapRelayXml } from '../../lib/namecheap.js';
 import { simulated } from './util.js';
 import type { MailgunDnsRecord } from './mailgun.js';
 
@@ -150,18 +150,20 @@ function mailgunToDns(rec: MailgunDnsRecord, domain: string): DnsRecord {
  */
 async function applyRecords(ctx: StepContext, domain: string, incoming: DnsRecord[], type: string): Promise<Record<string, unknown>> {
   const getRes = await callApi(ctx, getHostsUrl(domain), 'namecheap.domains.dns.getHosts');
-  if (!parseApiStatus(getRes.raw)) {
-    throw new Error(`namecheap.domains.dns.getHosts failed (${type}): ${parseApiError(getRes.raw) ?? 'unknown error'}`);
+  const getXml = unwrapRelayXml(getRes.raw);
+  if (!parseApiStatus(getXml)) {
+    throw new Error(`namecheap.domains.dns.getHosts failed (${type}): ${parseApiError(getXml) ?? 'unknown error'}`);
   }
-  const existing = parseHosts(getRes.raw);
+  const existing = parseHosts(getXml);
 
   const incomingKeys = new Set(incoming.map((r) => `${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
   const kept = existing.filter((r) => !incomingKeys.has(`${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
   const merged = [...kept, ...incoming];
 
   const setRes = await callApi(ctx, setHostsUrl(domain, merged), 'namecheap.domains.dns.setHosts');
-  if (!parseSetHostsSuccess(setRes.raw)) {
-    throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${parseApiError(setRes.raw) ?? 'unknown error'}`);
+  const setXml = unwrapRelayXml(setRes.raw);
+  if (!parseSetHostsSuccess(setXml)) {
+    throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${parseApiError(setXml) ?? 'unknown error'}`);
   }
 
   return { domain, type, added: incoming.length, kept: kept.length, total: merged.length };

@@ -15,6 +15,27 @@ import { config } from '../config.js';
  * With no relay configured, calls go directly to NAMECHEAP_BASE_URL (sandbox by
  * default) - fine for local/dev where the machine's IP is whitelisted.
  */
+/**
+ * Unwrap a relay response that JSON-encoded the XML. The WordPress relay returns
+ * the Namecheap XML via WP_REST_Response, which serializes the body as a JSON
+ * string (escaping every "). That turns Available="true" into Available=\"true\",
+ * which breaks the attribute regexes. If the body is a JSON-encoded string,
+ * decode it back to raw XML; otherwise return it unchanged (the standalone PHP
+ * relay and direct calls already return raw XML).
+ */
+export function unwrapRelayXml(raw: string): string {
+  const t = raw.trim();
+  if (t.startsWith('"') && t.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(t);
+      if (typeof decoded === 'string') return decoded;
+    } catch {
+      // not valid JSON - fall through and return as-is
+    }
+  }
+  return raw;
+}
+
 export function namecheapUrl(command: string, extra: Record<string, string> = {}): string {
   const params = new URLSearchParams({
     ApiUser: config.namecheap.apiUser(),

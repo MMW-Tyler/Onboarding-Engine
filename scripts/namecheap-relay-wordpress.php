@@ -62,5 +62,13 @@ function onboard_namecheap_relay(WP_REST_Request $req) {
 
     $body = wp_remote_retrieve_body($resp);
     $status = wp_remote_retrieve_response_code($resp);
-    return new WP_REST_Response($body, $status ?: 200, ['Content-Type' => 'text/xml']);
+
+    // Emit the Namecheap XML VERBATIM. Returning a WP_REST_Response would
+    // JSON-encode the body (wrapping it in quotes and escaping every " inside),
+    // which turns Available="true" into Available=\"true\" and breaks the
+    // downstream XML attribute parsing. So write the raw XML and stop.
+    status_header($status ?: 200);
+    header('Content-Type: text/xml; charset=utf-8');
+    echo $body;
+    exit;
 }

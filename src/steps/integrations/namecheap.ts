@@ -2,7 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { namecheapUrl } from '../../lib/namecheap.js';
+import { namecheapUrl, unwrapRelayXml } from '../../lib/namecheap.js';
 import { profileOf, simulated } from './util.js';
 
 /**
@@ -37,21 +37,26 @@ function ncUrl(command: string, extra: Record<string, string> = {}): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The brandable base label taken from the client's EXISTING website, used to
- * build the new sending domain to purchase. e.g. https://www.nezhat.org -> 'nezhat'.
- *
- * Derived from the client's website_url (NOT ctx.run.domain), because after a
- * purchase ctx.run.domain becomes the newly bought domain - deriving from it
- * would compound on re-runs (nezhatpatients -> nezhatpatientspatients). Falls
- * back to an office-name slug only when there is no website on file.
+ * The client's EXISTING website, used as the base for the new domain to buy.
+ * Prefers the profile's website_url (set by normalize_intake on the full flow);
+ * falls back to ctx.run.domain (what's typed into the Website URL field on a
+ * manual domain_warmup_only run). A successful purchase backfills website_url
+ * from this so re-runs stay stable even after run.domain is overwritten with the
+ * purchased domain (avoids nezhatpx -> nezhatpxpx compounding).
  */
-function clientBaseLabel(ctx: StepContext): string {
-  const profile = profileOf(ctx.run);
+function siteSource(ctx: StepContext): string {
+  const fromProfile = profileOf(ctx.run).website_url ?? '';
+  if (fromProfile.trim()) return fromProfile.trim();
+  const fromRun = (ctx.run.domain as string | undefined) ?? '';
+  return fromRun.trim();
+}
 
-  const websiteUrl = profile.website_url ?? '';
-  if (websiteUrl) {
+/** Brandable base label from a website/domain string, e.g. www.nezhat.org -> 'nezhat'. */
+function baseLabel(ctx: StepContext): string {
+  const source = siteSource(ctx);
+  if (source) {
     try {
-      const url = new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`);
+      const url = new URL(source.startsWith('http') ? source : `https://${source}`);
       const host = url.hostname.replace(/^www\./, '');
       const sld = host.split('.')[0] ?? '';
       const clean = sld.toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -60,8 +65,7 @@ function clientBaseLabel(ctx: StepContext): string {
       // fall through to slug approach
     }
   }
-
-  const name = (profile.office_name ?? ctx.run.client_name ?? 'client').toLowerCase();
+  const name = (profileOf(ctx.run).office_name ?? ctx.run.client_name ?? 'client').toLowerCase();
   return name.replace(/[^a-z0-9]+/g, '').slice(0, 50) || 'client';
 }
 
@@ -70,22 +74,36 @@ function clientBaseLabel(ctx: StepContext): string {
  *   1. <base>px.com         (preferred - shortest, keeps SMS trigger links short
  *                            so texts stay cheaper and URLs don't break)
  *   2. <base>patients.com   (fallback if px.com is taken)
- * where <base> is the client's existing website name (see clientBaseLabel).
+ * where <base> is the client's existing website name (see baseLabel).
  */
 function purchaseCandidates(ctx: StepContext): string[] {
-  const base = clientBaseLabel(ctx);
+  const base = baseLabel(ctx);
   return [`${base}px.com`, `${base}patients.com`];
+}
+
+/** Availability outcome for one domain, distinguishing API errors from "taken". */
+type CheckOutcome = { available: true } | { available: false } | { error: string };
+
+/**
+ * Interpret a domains.check response. A real result has a DomainCheckResult with
+ * Available="true|false"; anything else (Status="ERROR", no result element,
+ * relay mangling) is surfaced as an error rather than silently read as "taken".
+ */
+function checkOutcome(rawXml: string): CheckOutcome {
+  const xml = unwrapRelayXml(rawXml);
+  if (/Status\s*=\s*"ERROR"/i.test(xml)) {
+    return { error: parseApiError(xml) ?? 'Namecheap API error' };
+  }
+  const m = xml.match(/<DomainCheckResult[^>]*\bAvailable\s*=\s*"(true|false)"/i);
+  if (!m) {
+    return { error: `unexpected domains.check response (no DomainCheckResult); first 200 chars: ${xml.slice(0, 200)}` };
+  }
+  return m[1]!.toLowerCase() === 'true' ? { available: true } : { available: false };
 }
 
 // ---------------------------------------------------------------------------
 // XML parsing helpers
 // ---------------------------------------------------------------------------
-
-/** Extract Available attribute from a DomainCheckResult XML element. */
-function parseAvailable(xml: string): boolean {
-  const m = xml.match(/Available\s*=\s*"(true|false)"/i);
-  return m?.[1]?.toLowerCase() === 'true';
-}
 
 /** Extract a first numeric price value from getPricing XML. */
 function parsePrice(xml: string): string | null {
@@ -112,16 +130,18 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
   const candidates = purchaseCandidates(ctx);
 
   // domains.check each candidate (free availability check; never charges).
-  const checked: { domain: string; available: boolean }[] = [];
+  const checked: { domain: string; available: boolean | null; error?: string }[] = [];
   for (const domain of candidates) {
     const checkRes = await callApi(
       ctx,
       ncUrl('namecheap.domains.check', { DomainList: domain }),
       'namecheap.domains.check',
     );
-    checked.push({ domain, available: parseAvailable(checkRes.raw) });
+    const outcome = checkOutcome(checkRes.raw);
+    if ('error' in outcome) checked.push({ domain, available: null, error: outcome.error });
+    else checked.push({ domain, available: outcome.available });
   }
-  const wouldPurchase = checked.find((c) => c.available)?.domain ?? null;
+  const wouldPurchase = checked.find((c) => c.available === true)?.domain ?? null;
 
   // users.getPricing - read-safe pricing lookup; never charges.
   const pricingRes = await callApi(
@@ -129,7 +149,7 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
     ncUrl('namecheap.users.getPricing', { ProductType: 'DOMAIN' }),
     'namecheap.users.getPricing',
   );
-  const price = parsePrice(pricingRes.raw);
+  const price = parsePrice(unwrapRelayXml(pricingRes.raw));
 
   // NEVER call domains.create in dry mode.
   return simulated({
@@ -163,13 +183,19 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
       ncUrl('namecheap.domains.check', { DomainList: candidate }),
       'namecheap.domains.check',
     );
-    if (parseAvailable(checkRes.raw)) {
+    const outcome = checkOutcome(checkRes.raw);
+    // A genuine API/relay failure must NOT be treated as "taken" - stop and
+    // surface it, so we don't fall through to a misleading "nothing available".
+    if ('error' in outcome) {
+      throw new Error(`namecheap: domains.check failed for ${candidate}: ${outcome.error}`);
+    }
+    if (outcome.available) {
       domain = candidate;
       break;
     }
   }
   if (!domain) {
-    throw new Error(`namecheap: no candidate domain available to purchase (tried: ${candidates.join(', ')}).`);
+    throw new Error(`namecheap: neither candidate is available to purchase (tried: ${candidates.join(', ')}).`);
   }
   await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.target', response_body: { domain } });
 
@@ -217,16 +243,22 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
     'namecheap.domains.create',
   );
 
-  const success = parseApiStatus(createRes.raw);
+  const createXml = unwrapRelayXml(createRes.raw);
+  const success = parseApiStatus(createXml);
   if (!success) {
-    const errMsg = parseApiError(createRes.raw) ?? 'unknown error from Namecheap';
+    const errMsg = parseApiError(createXml) ?? 'unknown error from Namecheap';
     throw new Error(`namecheap.domains.create failed: ${errMsg}`);
   }
 
-  // Persist the purchased domain back to the run row.
+  // Persist the purchased domain as the run's working domain, and backfill the
+  // original site into the profile so a later re-run derives the base from the
+  // ORIGINAL site (not this purchased domain). Non-destructive: only sets
+  // website_url if it wasn't already populated.
+  const profile = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
+  const profilePatch = profile.website_url ? profile : { ...profile, website_url: siteSource(ctx) };
   await db()
     .from('onboarding_runs')
-    .update({ domain, updated_at: new Date().toISOString() })
+    .update({ domain, client_profile_json: profilePatch, updated_at: new Date().toISOString() })
     .eq('id', ctx.run.id);
 
   return { domain, purchased: true };
