@@ -254,6 +254,7 @@ async function loadDetail() {
       '<h2 class="detail-head" style="border:none;color:var(--ink);margin:0;">' + (run.client_name || '(no name)') + '</h2>' +
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
       '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
+      '<button class="tiny" onclick="postRollup()" title="Re-post this run\'s roll-up to its Slack channel (no-op for runs without a channel, e.g. domain-only)">send roll-up</button>' +
       '<button class="tiny" onclick="authorizePurchase()" title="Consent to a REAL domain purchase for this run (needed alongside NAMECHEAP_LIVE for the costly step to run)">authorize purchase</button>' +
       '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset EVERY step and re-run the whole run live. Use only to promote a dry run — re-running a live run re-creates Drive/ClickUp assets.">re-run live</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
@@ -292,6 +293,15 @@ async function authorizePurchase() {
   try {
     await api('/runs/' + selectedRun + '/authorize-purchase', { method: 'POST' });
     toast('purchase authorized for this run');
+  } catch (e) { toast('error: ' + e.message); }
+}
+
+async function postRollup() {
+  try {
+    const r = await api('/runs/' + selectedRun + '/post-rollup', { method: 'POST' });
+    const n = (r.reposted || []).length;
+    toast(n ? ('re-posting roll-up: ' + r.reposted.join(', ')) : 'no roll-up step on this run (no Slack channel)');
+    setTimeout(loadDetail, 800);
   } catch (e) { toast('error: ' + e.message); }
 }
 

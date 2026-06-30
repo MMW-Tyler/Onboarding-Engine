@@ -313,6 +313,22 @@ export async function authorizePurchase(runId: string): Promise<{ runId: string;
   return { runId, authorized: true };
 }
 
+/**
+ * Re-post a run's roll-up Slack message on demand (dashboard "send roll-up").
+ * Re-runs whatever roll-up step the run has (Wave 1 and/or Wave 2), reusing the
+ * step's own channel resolution and message-building. Returns the step keys it
+ * re-ran; an empty array means the run has no roll-up step (e.g. a domain-only
+ * run, which has no Slack channel to post to).
+ */
+export async function resendRollup(runId: string): Promise<string[]> {
+  const { data, error } = await db().from('run_steps')
+    .select('step_key').eq('run_id', runId).in('step_key', ['slack.wave1_rollup', 'wave2.rollup']);
+  if (error) throw new Error(`resendRollup: ${error.message}`);
+  const keys = (data ?? []).map((r) => r.step_key as string);
+  for (const k of keys) await retryStep(runId, k);
+  return keys;
+}
+
 /** Load a single run_steps row. */
 export async function loadStep(runId: string, stepKey: string): Promise<RunStep | null> {
   const { data, error } = await db()
