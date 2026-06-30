@@ -37,36 +37,43 @@ function ncUrl(command: string, extra: Record<string, string> = {}): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Determine the target domain for this run. Priority:
- *   1. ctx.run.domain (set by profile.normalize_intake from website_url)
- *   2. website_url from the client profile (strip scheme/path, lowercase)
- *   3. Slug of office_name + '.com' fallback
+ * The brandable base label taken from the client's EXISTING website, used to
+ * build the new sending domain to purchase. e.g. https://www.nezhat.org -> 'nezhat'.
+ *
+ * Derived from the client's website_url (NOT ctx.run.domain), because after a
+ * purchase ctx.run.domain becomes the newly bought domain - deriving from it
+ * would compound on re-runs (nezhatpatients -> nezhatpatientspatients). Falls
+ * back to an office-name slug only when there is no website on file.
  */
-function resolveDomain(ctx: StepContext): string {
-  // 1. Prefer the pre-resolved domain on the run row.
-  if (ctx.run.domain && typeof ctx.run.domain === 'string' && ctx.run.domain.trim()) {
-    return ctx.run.domain.trim().toLowerCase();
-  }
-
+function clientBaseLabel(ctx: StepContext): string {
   const profile = profileOf(ctx.run);
 
-  // 2. Derive from website_url in the profile.
   const websiteUrl = profile.website_url ?? '';
   if (websiteUrl) {
     try {
       const url = new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`);
-      // hostname may include www. - keep it as the registrable domain.
       const host = url.hostname.replace(/^www\./, '');
-      if (host && host.includes('.')) return host.toLowerCase();
+      const sld = host.split('.')[0] ?? '';
+      const clean = sld.toLowerCase().replace(/[^a-z0-9-]/g, '');
+      if (clean) return clean;
     } catch {
       // fall through to slug approach
     }
   }
 
-  // 3. Slug of office_name + '.com'.
   const name = (profile.office_name ?? ctx.run.client_name ?? 'client').toLowerCase();
-  const slug = name.replace(/[^a-z0-9]+/g, '').slice(0, 50);
-  return `${slug || 'client'}.com`;
+  return name.replace(/[^a-z0-9]+/g, '').slice(0, 50) || 'client';
+}
+
+/**
+ * The ordered list of domains to attempt to purchase for this client:
+ *   1. <base>patients.com   (preferred)
+ *   2. <base>px.com         (fallback if the first is taken)
+ * where <base> is the client's existing website name (see clientBaseLabel).
+ */
+function purchaseCandidates(ctx: StepContext): string[] {
+  const base = clientBaseLabel(ctx);
+  return [`${base}patients.com`, `${base}px.com`];
 }
 
 // ---------------------------------------------------------------------------
@@ -101,15 +108,19 @@ function parseApiError(xml: string): string | null {
 // ---------------------------------------------------------------------------
 
 async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unknown>> {
-  const domain = resolveDomain(ctx);
+  const candidates = purchaseCandidates(ctx);
 
-  // domains.check - free availability check; never charges.
-  const checkRes = await callApi(
-    ctx,
-    ncUrl('namecheap.domains.check', { DomainList: domain }),
-    'namecheap.domains.check',
-  );
-  const available = parseAvailable(checkRes.raw);
+  // domains.check each candidate (free availability check; never charges).
+  const checked: { domain: string; available: boolean }[] = [];
+  for (const domain of candidates) {
+    const checkRes = await callApi(
+      ctx,
+      ncUrl('namecheap.domains.check', { DomainList: domain }),
+      'namecheap.domains.check',
+    );
+    checked.push({ domain, available: parseAvailable(checkRes.raw) });
+  }
+  const wouldPurchase = checked.find((c) => c.available)?.domain ?? null;
 
   // users.getPricing - read-safe pricing lookup; never charges.
   const pricingRes = await callApi(
@@ -121,8 +132,8 @@ async function purchaseDomainDry(ctx: StepContext): Promise<Record<string, unkno
 
   // NEVER call domains.create in dry mode.
   return simulated({
-    domain,
-    available,
+    candidates: checked,
+    would_purchase: wouldPurchase,
     price,
     note: 'dry-run: check + pricing only, no purchase',
   });
@@ -137,24 +148,29 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   // NAMECHEAP_LIVE=true and the per-run unlock token. Do not add a secondary
   // guard here - it would silently mask runner failures.
 
-  const domain = resolveDomain(ctx);
+  // Build the candidate list (<base>patients.com, then <base>px.com) and buy the
+  // FIRST one that is available. domains.check is a free read; only an available
+  // domain is ever purchased, so a taken first choice safely falls back and a
+  // domain that's already registered is never bought.
+  const candidates = purchaseCandidates(ctx);
+  await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.candidates', response_body: { candidates } });
 
-  // Announce the resolved target up front so the event feed always shows exactly
-  // which domain is about to be bought.
-  await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.target', response_body: { domain } });
-
-  // SAFETY: only ever buy an AVAILABLE domain. domains.check is a free read; if
-  // the domain is already registered (e.g. the client's existing website domain,
-  // or someone else's), refuse instead of attempting a purchase. This also means
-  // a misconfigured run can never accidentally try to buy a domain we don't want.
-  const guardCheck = await callApi(
-    ctx,
-    ncUrl('namecheap.domains.check', { DomainList: domain }),
-    'namecheap.domains.check',
-  );
-  if (!parseAvailable(guardCheck.raw)) {
-    throw new Error(`namecheap: refusing to purchase ${domain} - it is not available (already registered). The engine only buys available domains.`);
+  let domain = '';
+  for (const candidate of candidates) {
+    const checkRes = await callApi(
+      ctx,
+      ncUrl('namecheap.domains.check', { DomainList: candidate }),
+      'namecheap.domains.check',
+    );
+    if (parseAvailable(checkRes.raw)) {
+      domain = candidate;
+      break;
+    }
   }
+  if (!domain) {
+    throw new Error(`namecheap: no candidate domain available to purchase (tried: ${candidates.join(', ')}).`);
+  }
+  await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.target', response_body: { domain } });
 
   // Registrant = MMW agency WHOIS contact from config (one set for every domain).
   // Validate up front so a live purchase fails clearly instead of registering a
