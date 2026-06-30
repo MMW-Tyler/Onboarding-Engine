@@ -298,22 +298,6 @@ export async function resumeRun(runId: string): Promise<string[]> {
 }
 
 /**
- * Authorize the costly domain purchase for one run (the per-run half of the
- * two-key unlock; the other half is NAMECHEAP_LIVE=true at the service level).
- * Writes a confirmation token into raw_intake_json, which the runner checks
- * before dispatching namecheap.purchase_domain in live mode. Deliberate and
- * per-run so a domain is never bought without an explicit click.
- */
-export async function authorizePurchase(runId: string): Promise<{ runId: string; authorized: true }> {
-  const { data: run, error } = await db().from('onboarding_runs').select('raw_intake_json').eq('id', runId).maybeSingle();
-  if (error) throw new Error(`authorizePurchase: ${error.message}`);
-  if (!run) throw new Error(`authorizePurchase: no such run ${runId}`);
-  const raw = { ...((run.raw_intake_json as Record<string, unknown>) ?? {}), namecheap_confirm_token: `authorized:${runId}` };
-  await db().from('onboarding_runs').update({ raw_intake_json: raw, updated_at: new Date().toISOString() }).eq('id', runId);
-  return { runId, authorized: true };
-}
-
-/**
  * Re-post a run's roll-up Slack message on demand (dashboard "send roll-up").
  * Re-runs whatever roll-up step the run has (Wave 1 and/or Wave 2), reusing the
  * step's own channel resolution and message-building. Returns the step keys it

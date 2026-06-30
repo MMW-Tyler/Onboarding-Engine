@@ -39,6 +39,15 @@
   button.primary:hover { background:#a8380a; }
   button.tiny { padding:2px 9px; font-size:10px; letter-spacing:.05em; }
 
+  /* Collapsible "advanced" sections - hide technical detail by default */
+  details.adv { margin-top:18px; border-top:1px solid var(--line-soft); }
+  details.adv > summary { font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); cursor:pointer; padding:10px 0 2px; list-style:none; user-select:none; }
+  details.adv > summary::-webkit-details-marker { display:none; }
+  details.adv > summary::before { content:'▸  '; }
+  details.adv[open] > summary::before { content:'▾  '; }
+  details.adv > summary:hover { color:var(--accent); }
+
   .wrap { display:grid; grid-template-columns:340px 1fr; min-height:calc(100vh - 60px); }
   .col { padding:22px 26px; }
   .left { border-right:3px solid var(--line); background:var(--paper-2); }
@@ -111,21 +120,25 @@
     <select id="recipe"></select>
     <label>Client name</label>
     <input id="clientName" placeholder="Test Co" />
-    <label>Website URL (sets domain for DNS / Namecheap / Warmup)</label>
+    <label>Website URL</label>
     <input id="website" placeholder="https://example.com" />
-    <label>Mode for this run</label>
-    <select id="runMode">
-      <option value="">(use global)</option>
-      <option value="dry">dry</option>
-      <option value="live">live</option>
-    </select>
-    <label>Intake JSON (advanced — overrides name / website)</label>
-    <textarea id="intakeJson" rows="3" placeholder='{"Name Of Office":"...","Website URL":"..."}'></textarea>
-    <label>echo demo: fail echo.root N times (try 3+ to see flagged)</label>
-    <input id="failTimes" type="number" min="0" placeholder="0" />
     <div style="margin-top:16px;">
       <button class="primary" id="fire" style="width:100%;padding:10px;">Fire run</button>
     </div>
+
+    <details class="adv">
+      <summary>Advanced options</summary>
+      <label>Mode for this run</label>
+      <select id="runMode">
+        <option value="">(use default)</option>
+        <option value="dry">dry</option>
+        <option value="live">live</option>
+      </select>
+      <label>Intake JSON (overrides name / website)</label>
+      <textarea id="intakeJson" rows="3" placeholder='{"Name Of Office":"...","Website URL":"..."}'></textarea>
+      <label>echo demo: fail echo.root N times (try 3+ to see flagged)</label>
+      <input id="failTimes" type="number" min="0" placeholder="0" />
+    </details>
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:30px;">
       <h2 style="margin:0;border:none;padding:0;">Runs</h2>
@@ -194,13 +207,24 @@ $('editPinned').onclick = async () => {
   } catch (e) { toast('error: ' + e.message); }
 };
 
+const RECIPE_LABELS = {
+  full_onboarding: 'Full onboarding',
+  domain_warmup_only: 'Domain + email setup',
+  device_client_setup: 'Device client setup',
+  ghl_only: 'GHL sub-account only',
+  wave2_research: 'AI research (Wave 2)',
+  slack_only: 'Slack channel test',
+  echo_demo: 'Echo demo (test)',
+};
 async function loadRecipes() {
   recipes = await api('/recipes');
   const sel = $('recipe');
   sel.innerHTML = '';
   Object.keys(recipes).forEach((name) => {
     const o = document.createElement('option');
-    o.value = name; o.textContent = name + '  (' + recipes[name].length + ' steps)';
+    o.value = name;
+    o.textContent = RECIPE_LABELS[name] || name;
+    o.title = name + ' · ' + recipes[name].length + ' steps';
     sel.appendChild(o);
   });
 }
@@ -255,14 +279,13 @@ async function loadDetail() {
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
       '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
       '<button class="tiny" onclick="postRollup()" title="Re-post this run\'s roll-up to its Slack channel (no-op for runs without a channel, e.g. domain-only)">send roll-up</button>' +
-      '<button class="tiny" onclick="authorizePurchase()" title="Consent to a REAL domain purchase for this run (needed alongside NAMECHEAP_LIVE for the costly step to run)">authorize purchase</button>' +
       '<button class="tiny" onclick="rerunLive(\'' + run.mode + '\')" title="Reset EVERY step and re-run the whole run live. Use only to promote a dry run — re-running a live run re-creates Drive/ClickUp assets.">re-run live</button>' +
       '<button class="tiny" onclick="loadDetail()">refresh</button></div>' +
       '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;letter-spacing:.05em;">' +
       run.recipe + ' · ' + run.mode + '</div>' +
       '<div class="legend">' + legend + '</div>' +
       '<div class="chips">' + steps.map(chip).join('') + '</div>' +
-      '<h2>Event / error feed</h2>' +
+      '<details class="adv"><summary>Technical log (' + events.length + ' events)</summary>' +
       '<div class="tbl-scroll"><table><tr><th>time</th><th>lvl</th><th>step</th><th>att</th><th>endpoint</th><th>status</th><th>detail</th></tr>' +
       events.map((e) =>
         '<tr><td>' + new Date(e.ts).toLocaleTimeString() + '</td>' +
@@ -271,7 +294,7 @@ async function loadDetail() {
         '<td>' + (e.endpoint || '') + '</td>' +
         '<td>' + (e.response_status || '') + '</td>' +
         '<td><pre>' + (e.parsed_error || JSON.stringify(e.response_body || e.request_redacted || '')) + '</pre></td></tr>'
-      ).join('') + '</table></div>';
+      ).join('') + '</table></div></details>';
     $('detail').innerHTML = html;
   } catch (e) { $('detail').innerHTML = '<div class="empty">detail error: ' + e.message + '</div>'; }
 }
@@ -286,14 +309,6 @@ async function retryFlagged() {
   try { const r = await api('/runs/' + selectedRun + '/retry-flagged', { method: 'POST' });
     toast('retrying ' + (r.retried || []).length + ' flagged'); setTimeout(loadDetail, 600); }
   catch (e) { toast('error: ' + e.message); }
-}
-
-async function authorizePurchase() {
-  if (!confirm('Authorize a REAL domain purchase for this run?\n\nThis is the per-run consent. The costly namecheap.purchase_domain step will buy the domain on the next run/resume IF NAMECHEAP_LIVE=true and the step is not pinned dry.')) return;
-  try {
-    await api('/runs/' + selectedRun + '/authorize-purchase', { method: 'POST' });
-    toast('purchase authorized for this run');
-  } catch (e) { toast('error: ' + e.message); }
 }
 
 async function postRollup() {

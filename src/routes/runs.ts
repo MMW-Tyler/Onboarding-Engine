@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, authorizePurchase, resendRollup } from '../engine/runs.js';
+import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, resendRollup } from '../engine/runs.js';
 import { redact } from '../redact.js';
 
 export const runsRouter = Router();
@@ -130,17 +130,6 @@ runsRouter.post('/runs/:id/post-rollup', async (req, res) => {
   try {
     const reposted = await resendRollup(req.params.id);
     return res.json({ ok: true, reposted });
-  } catch (err) {
-    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-/** POST /runs/:id/authorize-purchase - optional per-run note (purchases now
- *  auto-authorize via NAMECHEAP_LIVE; kept for explicit marking). */
-runsRouter.post('/runs/:id/authorize-purchase', async (req, res) => {
-  try {
-    const result = await authorizePurchase(req.params.id);
-    return res.json({ ok: true, ...result });
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
