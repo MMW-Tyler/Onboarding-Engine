@@ -122,14 +122,13 @@ export const config = {
     snapshotId: () => optional('GHL_SNAPSHOT_ID'),
     a2pFieldMap: () => optional('GHL_A2P_CUSTOM_FIELD_MAP'),
     // GHL branded-domain DNS record written onto the client domain so a GHL
-    // funnel/site resolves through it. Get the exact host+target from the
-    // sub-account's Settings -> Domains. If target is unset, dns.ghl_records
-    // skips itself (rather than writing a placeholder). Most GHL setups use a
-    // CNAME; some use an A record to a GHL IP - set type accordingly.
+    // funnel/site resolves through it. MMW's standard is a CNAME at host "go"
+    // pointing to brand.ludicrous.cloud; these are the defaults so no env is
+    // needed. Override per-env only if that ever changes.
     brandedDns: () => ({
-      host: optional('GHL_BRANDED_DNS_HOST', 'app'),
+      host: optional('GHL_BRANDED_DNS_HOST', 'go'),
       type: optional('GHL_BRANDED_DNS_TYPE', 'CNAME').toUpperCase(),
-      target: optional('GHL_BRANDED_DNS_TARGET'),
+      target: optional('GHL_BRANDED_DNS_TARGET', 'brand.ludicrous.cloud'),
     }),
   },
   dataforseo: {

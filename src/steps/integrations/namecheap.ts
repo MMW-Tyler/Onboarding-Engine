@@ -139,6 +139,23 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
 
   const domain = resolveDomain(ctx);
 
+  // Announce the resolved target up front so the event feed always shows exactly
+  // which domain is about to be bought.
+  await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.target', response_body: { domain } });
+
+  // SAFETY: only ever buy an AVAILABLE domain. domains.check is a free read; if
+  // the domain is already registered (e.g. the client's existing website domain,
+  // or someone else's), refuse instead of attempting a purchase. This also means
+  // a misconfigured run can never accidentally try to buy a domain we don't want.
+  const guardCheck = await callApi(
+    ctx,
+    ncUrl('namecheap.domains.check', { DomainList: domain }),
+    'namecheap.domains.check',
+  );
+  if (!parseAvailable(guardCheck.raw)) {
+    throw new Error(`namecheap: refusing to purchase ${domain} - it is not available (already registered). The engine only buys available domains.`);
+  }
+
   // Registrant = MMW agency WHOIS contact from config (one set for every domain).
   // Validate up front so a live purchase fails clearly instead of registering a
   // domain with placeholder/incomplete WHOIS (ICANN suspension risk).
