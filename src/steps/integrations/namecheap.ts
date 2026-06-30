@@ -67,13 +67,14 @@ function clientBaseLabel(ctx: StepContext): string {
 
 /**
  * The ordered list of domains to attempt to purchase for this client:
- *   1. <base>patients.com   (preferred)
- *   2. <base>px.com         (fallback if the first is taken)
+ *   1. <base>px.com         (preferred - shortest, keeps SMS trigger links short
+ *                            so texts stay cheaper and URLs don't break)
+ *   2. <base>patients.com   (fallback if px.com is taken)
  * where <base> is the client's existing website name (see clientBaseLabel).
  */
 function purchaseCandidates(ctx: StepContext): string[] {
   const base = clientBaseLabel(ctx);
-  return [`${base}patients.com`, `${base}px.com`];
+  return [`${base}px.com`, `${base}patients.com`];
 }
 
 // ---------------------------------------------------------------------------
