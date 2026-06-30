@@ -248,54 +248,62 @@ function websiteSection(profile: Record<string, any>): string {
   return detail.length ? `${head}\n${detail.join('\n')}` : head;
 }
 
-async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
-  const { data: run } = await db().from('onboarding_runs').select('*').eq('id', ctx.run.id).single();
-  const r = (run ?? ctx.run) as Record<string, any>;
-  const channel = r.slack_channel_id as string | undefined;
-  if (!channel) return { posted: false, reason: 'no slack channel on run' };
-
+/** Load the run row + Wave 1 step rows for the roll-up. */
+async function loadRollupData(runId: string): Promise<{ r: Record<string, any>; byKey: Map<string, any> }> {
+  const { data: run } = await db().from('onboarding_runs').select('*').eq('id', runId).single();
   const { data: stepRows } = await db()
-    .from('run_steps').select('step_key, status, output_json, last_error').eq('run_id', ctx.run.id).in('step_key', W1_ASSET_STEPS);
+    .from('run_steps').select('step_key, status, output_json, last_error').eq('run_id', runId).in('step_key', W1_ASSET_STEPS);
   const byKey = new Map((stepRows ?? []).map((s) => [s.step_key as string, s]));
+  return { r: (run ?? { id: runId }) as Record<string, any>, byKey };
+}
+
+interface Wave1Content {
+  client: string;
+  assetLines: string[];
+  platformLine: string;
+  stackLines: string[];
+  allStackSimulated: boolean;
+}
+
+/**
+ * Build the roll-up content. `asLinks` controls link rendering: true uses Slack's
+ * <url|label> syntax for an API-posted message; false emits raw URLs for a
+ * copy-paste message (typed Slack text auto-links raw URLs but does NOT render
+ * <url|label>). *bold*, `code`, and emoji render the same either way.
+ */
+function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLinks: boolean): Wave1Content {
   const stat = (k: string) => (byKey.get(k)?.status as string | undefined);
   const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
   const err = (k: string) => (byKey.get(k)?.last_error as string | undefined);
+  const val = (url: string, label: string) => (asLinks ? link(url, label) : url);
 
   const team = config.clickup.teamId();
   const profile = (r.client_profile_json ?? {}) as Record<string, any>;
   const client = r.client_name ?? 'client';
 
-  // Build "asset — link" lines, only for assets that produced an id. Links use
-  // Slack's <url|label> syntax so they render as a clickable label, not a raw URL.
-  const lines: string[] = [];
-  lines.push(`${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  this channel`);
+  const assetLines: string[] = [];
+  assetLines.push(`${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  ${asLinks ? 'this channel' : 'created'}`);
 
   const companyId = (r.hubspot_company_id as string | undefined) ?? out('hubspot.upsert').company_id;
   if (companyId) {
     const portal = config.hubspot.portalId();
-    const val = portal ? link(`https://app.hubspot.com/contacts/${portal}/company/${companyId}`, 'Open in HubSpot') : `id \`${companyId}\``;
-    lines.push(`${rollupEmoji(stat('hubspot.upsert'))}  *HubSpot company*  —  ${val}`);
+    const v = portal ? val(`https://app.hubspot.com/contacts/${portal}/company/${companyId}`, 'Open in HubSpot') : `id ${companyId}`;
+    assetLines.push(`${rollupEmoji(stat('hubspot.upsert'))}  *HubSpot company*  —  ${v}`);
   }
 
   const folderId = r.clickup_folder_id as string | undefined;
-  if (folderId && team) lines.push(`${rollupEmoji(stat('clickup.clone_template'))}  *ClickUp folder*  —  ${link(`https://app.clickup.com/${team}/v/f/${folderId}`, 'Open folder')}`);
+  if (folderId && team) assetLines.push(`${rollupEmoji(stat('clickup.clone_template'))}  *ClickUp folder*  —  ${val(`https://app.clickup.com/${team}/v/f/${folderId}`, 'Open folder')}`);
   const taskId = out('clickup.master_tracker').task_id as string | undefined;
-  if (taskId) lines.push(`${rollupEmoji(stat('clickup.master_tracker'))}  *ClickUp tracker*  —  ${link(`https://app.clickup.com/t/${taskId}`, 'Open task')}`);
+  if (taskId) assetLines.push(`${rollupEmoji(stat('clickup.master_tracker'))}  *ClickUp tracker*  —  ${val(`https://app.clickup.com/t/${taskId}`, 'Open task')}`);
 
   const driveId = r.drive_root_folder_id as string | undefined;
-  if (driveId) lines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${link(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
+  if (driveId) assetLines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${val(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
 
   const locId = r.ghl_location_id as string | undefined;
-  if (locId) lines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${link(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
+  if (locId) assetLines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${val(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
 
-  // Website platform check + tech fingerprint (the net-new info vs. the intake
-  // form). Detail lines (theme / plugins / integrations / fonts) come from the
-  // crawl when the site was reachable.
   const platformLine = websiteSection(profile);
 
-  // Domain + email stack status: report each step's outcome, and on a failure
-  // (e.g. price over cap, insufficient funds) surface WHY right in the channel.
   const STACK: [string, string][] = [
     ['namecheap.purchase_domain', 'Domain purchase'],
     ['mailgun.add_domain', 'Mailgun sending domain'],
@@ -314,20 +322,51 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   });
   const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
 
+  return { client, assetLines, platformLine, stackLines, allStackSimulated };
+}
+
+/**
+ * Plain-text roll-up for copy-paste into Slack (used when a run has no channel
+ * to auto-post to). Raw URLs + *bold* + emoji render correctly when pasted.
+ */
+export async function buildWave1RollupText(runId: string): Promise<string> {
+  const { r, byKey } = await loadRollupData(runId);
+  const c = buildWave1Content(r, byKey, false);
+  return [
+    `✅ Wave 1 complete — ${c.client}`,
+    `Account setup is done. Wave 2 (AI research) kicks off when the Client MMW onboarding form arrives.`,
+    ``,
+    `📦 Assets created`,
+    ...c.assetLines,
+    ``,
+    c.platformLine,
+    ``,
+    `🌐 Domain & email stack${c.allStackSimulated ? ' (simulated — pinned dry)' : ''}`,
+    ...c.stackLines,
+    ``,
+    `OnboardEngine · run ${r.id}`,
+  ].join('\n');
+}
+
+async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
+  const { r, byKey } = await loadRollupData(ctx.run.id);
+  const channel = r.slack_channel_id as string | undefined;
+  if (!channel) return { posted: false, reason: 'no slack channel on run' };
+
+  const c = buildWave1Content(r, byKey, true);
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${client}`, emoji: true } },
+    { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${c.client}`, emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. *Wave 2* (AI research) kicks off when the Client MMW onboarding form arrives.` } },
     { type: 'divider' },
-    { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${lines.join('\n')}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${c.assetLines.join('\n')}` } },
     { type: 'divider' },
-    { type: 'section', text: { type: 'mrkdwn', text: platformLine } },
+    { type: 'section', text: { type: 'mrkdwn', text: c.platformLine } },
     { type: 'divider' },
-    { type: 'section', text: { type: 'mrkdwn', text: `:globe_with_meridians: *Domain & email stack*${allStackSimulated ? ' _(simulated — pinned dry)_' : ''}\n${stackLines.join('\n')}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `:globe_with_meridians: *Domain & email stack*${c.allStackSimulated ? ' _(simulated — pinned dry)_' : ''}\n${c.stackLines.join('\n')}` } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${r.id}\`` }] },
   ];
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${r.id}\`` }] });
-
-  // Plain-text fallback (notifications / clients that don't render blocks).
-  const fallback = `Wave 1 complete — ${client}: ${lines.length} assets created.`;
+  const fallback = `Wave 1 complete — ${c.client}: ${c.assetLines.length} assets.`;
 
   const res = await callApi<any>(ctx, `${SLACK}/chat.postMessage`, 'slack.chat.postMessage', {
     method: 'POST',
@@ -335,7 +374,7 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
     json: { channel, text: fallback, blocks },
   });
   if (!res.body?.ok) throw new Error(`slack.chat.postMessage: ${res.body?.error ?? 'unknown'}`);
-  return { posted: true, ts: res.body.ts, assets: lines.length };
+  return { posted: true, ts: res.body.ts, assets: c.assetLines.length };
 }
 
 async function wave1RollupDry(ctx: StepContext): Promise<Record<string, unknown>> {
