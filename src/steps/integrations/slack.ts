@@ -201,6 +201,52 @@ function link(url: string, label: string): string {
   return `<${url}|${label}>`;
 }
 
+/** Join a list for display, capping length so the roll-up stays tidy. */
+function capList(items: unknown, max: number): string {
+  const arr = (Array.isArray(items) ? items : []).map((x) => String(x)).filter(Boolean);
+  if (arr.length === 0) return '';
+  const shown = arr.slice(0, max).join(', ');
+  return arr.length > max ? `${shown} (+${arr.length - max} more)` : shown;
+}
+
+/**
+ * Build the "Website" block: a platform/builder headline (with MMW's
+ * take-in-house vs refer-out call) plus the tech fingerprint the crawl pulled
+ * from the homepage (theme(s), plugins & tools, integrations, fonts).
+ */
+function websiteSection(profile: Record<string, any>): string {
+  const platform = (profile.detected_platform as string | undefined) || 'unknown';
+  const builder = profile.detected_wp_builder as string | undefined;
+
+  let head: string;
+  if (platform === 'unknown') {
+    head = `⚠️  *Website:* platform unknown — confirm manually`;
+  } else if (platform === 'WordPress') {
+    const ready = profile.mmw_take_in_house === true;
+    head = `${ready ? '✅' : '⚠️'}  *Website:* WordPress${builder ? ` / ${builder}` : ''} ${ready ? '— Elementor, take in-house' : '— not Elementor, review'}`;
+  } else {
+    head = `⚠️  *Website:* ${platform} — proprietary, refer-out / rebuild`;
+  }
+
+  // Merge plugin-path detections with third-party integration matches, deduped.
+  const tools: string[] = [];
+  const seen = new Set<string>();
+  for (const t of [...(profile.detected_plugins ?? []), ...(profile.detected_integrations ?? [])]) {
+    const key = String(t).toLowerCase();
+    if (!seen.has(key)) { seen.add(key); tools.push(String(t)); }
+  }
+
+  const detail: string[] = [];
+  const themes = capList(profile.detected_themes, 3);
+  if (themes) detail.push(`     • Theme: ${themes}`);
+  const toolsLine = capList(tools, 12);
+  if (toolsLine) detail.push(`     • Plugins & tools: ${toolsLine}`);
+  const fonts = capList(profile.detected_fonts, 8);
+  if (fonts) detail.push(`     • Fonts: ${fonts}`);
+
+  return detail.length ? `${head}\n${detail.join('\n')}` : head;
+}
+
 async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
   // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
   const { data: run } = await db().from('onboarding_runs').select('*').eq('id', ctx.run.id).single();
@@ -241,18 +287,10 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   const locId = r.ghl_location_id as string | undefined;
   if (locId) lines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${link(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
 
-  // Website platform check (the one piece of net-new info vs. the intake form).
-  const platform = (profile.detected_platform as string | undefined) || 'unknown';
-  const builder = profile.detected_wp_builder as string | undefined;
-  let platformLine: string;
-  if (platform === 'unknown') {
-    platformLine = `⚠️  *Website platform:* unknown — confirm manually`;
-  } else if (platform === 'WordPress') {
-    const ready = profile.mmw_take_in_house === true;
-    platformLine = `${ready ? '✅' : '⚠️'}  *Website platform:* WordPress${builder ? ` / ${builder}` : ''} ${ready ? '— Elementor, take in-house' : '— not Elementor, review'}`;
-  } else {
-    platformLine = `⚠️  *Website platform:* ${platform} — proprietary, refer-out / rebuild`;
-  }
+  // Website platform check + tech fingerprint (the net-new info vs. the intake
+  // form). Detail lines (theme / plugins / integrations / fonts) come from the
+  // crawl when the site was reachable.
+  const platformLine = websiteSection(profile);
 
   // Email/domain stack is pinned dry for now; note it so no one expects it live.
   const emailKeys = ['namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'warmup.enroll'];

@@ -183,6 +183,148 @@ function detectWpTheme(html: string): string | null {
   return m?.[1] ?? null;
 }
 
+// --- Richer tech fingerprint (theme(s), plugins, integrations, fonts) --------
+// All pulled from the same homepage HTML: WP assets expose plugin/theme slugs in
+// their URLs, fonts come from the Google Fonts <link>, and third-party widgets
+// (chat, donations, analytics) load from their own domains.
+
+/** Friendly display names for common WP plugin slugs. Unmapped slugs pass through. */
+const PLUGIN_NAMES: Record<string, string> = {
+  'wordpress-seo': 'Yoast SEO',
+  'seo-by-rank-math': 'Rank Math SEO',
+  'all-in-one-seo-pack': 'All in One SEO',
+  'contact-form-7': 'Contact Form 7',
+  'wpforms-lite': 'WPForms',
+  'wpforms': 'WPForms',
+  'gravityforms': 'Gravity Forms',
+  'ninja-forms': 'Ninja Forms',
+  'formidable': 'Formidable Forms',
+  'js_composer': 'WPBakery Page Builder',
+  'revslider': 'Slider Revolution',
+  'layerslider': 'LayerSlider',
+  'megamenu': 'Max Mega Menu',
+  'elementor': 'Elementor',
+  'elementor-pro': 'Elementor Pro',
+  'google-analytics-for-wordpress': 'MonsterInsights',
+  'ga-google-analytics': 'Google Analytics',
+  'instagram-feed': 'Smash Balloon Instagram Feed',
+  'custom-facebook-feed': 'Smash Balloon Facebook Feed',
+  'constant-contact-forms': 'Constant Contact Forms',
+  'mailchimp-for-wp': 'Mailchimp for WordPress',
+  'woocommerce': 'WooCommerce',
+  'give': 'GiveWP',
+  'wordfence': 'Wordfence Security',
+  'sucuri-scanner': 'Sucuri Security',
+  'really-simple-ssl': 'Really Simple SSL',
+  'wp-rocket': 'WP Rocket',
+  'litespeed-cache': 'LiteSpeed Cache',
+  'wp-super-cache': 'WP Super Cache',
+  'w3-total-cache': 'W3 Total Cache',
+  'autoptimize': 'Autoptimize',
+  'updraftplus': 'UpdraftPlus',
+  'wp-smushit': 'Smush',
+  'shortpixel-image-optimiser': 'ShortPixel',
+  'cookie-law-info': 'CookieYes',
+  'jetpack': 'Jetpack',
+  'wp-google-maps': 'WP Google Maps',
+  'redirection': 'Redirection',
+  'wordpress-popular-posts': 'Popular Posts',
+  'tablepress': 'TablePress',
+};
+
+/** Third-party / cross-platform tech detectable in HTML (not via plugin paths). */
+interface TechSignature { name: string; html: RegExp[] }
+const TECH_SIGNATURES: TechSignature[] = [
+  { name: 'Google Analytics (GA4)', html: [/gtag\/js\?id=G-/i, /\bG-[A-Z0-9]{6,}\b/] },
+  { name: 'Google Analytics (Universal)', html: [/google-analytics\.com\/(?:analytics|ga)\.js/i, /\bUA-\d{4,}-\d+\b/] },
+  { name: 'Google Tag Manager', html: [/googletagmanager\.com\/gtm\.js/i, /\bGTM-[A-Z0-9]{4,}\b/] },
+  { name: 'Meta Pixel', html: [/connect\.facebook\.net\/[^"']*fbevents\.js/i, /fbq\(\s*['"]init/i] },
+  { name: 'MonsterInsights', html: [/monsterinsights/i] },
+  { name: 'Yoast SEO', html: [/Yoast SEO plugin/i, /yoast[_-]?wpseo|class="yoast/i] },
+  { name: 'Rank Math', html: [/rank[\s-]?math/i] },
+  { name: 'Contact Form 7', html: [/wpcf7|contact-form-7/i] },
+  { name: 'Gravity Forms', html: [/gravityforms|\bgform_/i] },
+  { name: 'Constant Contact', html: [/ctctcdn\.com|constantcontact|constant-contact/i] },
+  { name: 'HubSpot Forms', html: [/js\.hsforms\.net|hsforms\.com/i] },
+  { name: 'Mailchimp', html: [/chimpstatic\.com|list-manage\.com|mc4wp/i] },
+  { name: 'Slider Revolution', html: [/revslider|rev_slider|revolution\/(?:js|css)/i] },
+  { name: 'Max Mega Menu', html: [/max-mega-menu|\bmegamenu\b/i] },
+  { name: 'Smash Balloon', html: [/sb_instagram|smash-balloon|cff-|custom-facebook-feed|instagram-feed/i] },
+  { name: 'FundraiseUp', html: [/fundraiseup/i] },
+  { name: 'Donorbox', html: [/donorbox\.org/i] },
+  { name: 'GiveWP', html: [/give-wp|givewp|\/plugins\/give\//i] },
+  { name: 'Classy', html: [/classy\.org\/embedded/i] },
+  { name: 'BotPenguin', html: [/botpenguin/i] },
+  { name: 'Intercom', html: [/widget\.intercom\.io|intercomcdn\.com/i] },
+  { name: 'Drift', html: [/js\.driftt\.com|drift\.com\/include/i] },
+  { name: 'tawk.to', html: [/embed\.tawk\.to/i] },
+  { name: 'LiveChat', html: [/cdn\.livechatinc\.com/i] },
+  { name: 'Tidio', html: [/code\.tidio\.co/i] },
+  { name: 'HubSpot Chat', html: [/js\.hs-scripts\.com/i] },
+  { name: 'Calendly', html: [/assets\.calendly\.com/i] },
+  { name: 'WooCommerce', html: [/woocommerce|wc-block/i] },
+  { name: 'Font Awesome', html: [/font-?awesome|fontawesome/i] },
+  { name: 'Bootstrap', html: [/bootstrap(?:\.min)?\.css|\/npm\/bootstrap/i] },
+  { name: 'jQuery', html: [/jquery(?:[.-][\d.]+)?(?:\.min)?\.js/i] },
+  { name: 'Structured data (Schema.org)', html: [/application\/ld\+json/i] },
+];
+
+/** Every WP plugin slug exposed in asset URLs, mapped to friendly names. */
+function extractWpPlugins(html: string): string[] {
+  const slugs = new Set<string>();
+  const re = /\/wp-content\/plugins\/([a-z0-9][a-z0-9_\-]*)\//gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) slugs.add(m[1]!.toLowerCase());
+  return [...slugs].sort().map((s) => PLUGIN_NAMES[s] ?? s);
+}
+
+/** Every WP theme slug exposed in asset URLs (catches parent + child themes). */
+function extractWpThemes(html: string): string[] {
+  const slugs = new Set<string>();
+  const re = /\/wp-content\/themes\/([a-z0-9][a-z0-9_\-]*)\//gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) slugs.add(m[1]!.toLowerCase());
+  return [...slugs];
+}
+
+/** Google Font families referenced via the Google Fonts CSS link(s). */
+function extractGoogleFonts(html: string): string[] {
+  const fams = new Set<string>();
+  const links = html.match(/fonts\.googleapis\.com\/css2?\?[^"')\s]+/gi) ?? [];
+  for (const link of links) {
+    for (const fm of link.match(/family=([^&]+)/gi) ?? []) {
+      const raw = decodeURIComponent(fm.replace(/^family=/i, '')).replace(/\+/g, ' ');
+      for (const part of raw.split('|')) {
+        const name = part.split(':')[0]!.trim();
+        if (name) fams.add(name);
+      }
+    }
+  }
+  return [...fams];
+}
+
+/** Third-party integrations matched from TECH_SIGNATURES. */
+function detectIntegrations(html: string): string[] {
+  return TECH_SIGNATURES.filter((s) => s.html.some((re) => re.test(html))).map((s) => s.name);
+}
+
+interface TechProfile {
+  themes: string[];
+  plugins: string[];
+  integrations: string[];
+  fonts: string[];
+}
+
+/** Full tech fingerprint from one homepage HTML. */
+function buildTechProfile(html: string): TechProfile {
+  return {
+    themes: extractWpThemes(html),
+    plugins: extractWpPlugins(html),
+    integrations: detectIntegrations(html),
+    fonts: extractGoogleFonts(html),
+  };
+}
+
 /** Match every WP builder whose signature appears; returns names ordered by hit count. */
 function detectWpBuilders(html: string): { builder: string; hits: number }[] {
   return WP_BUILDERS.map((b) => {
@@ -261,6 +403,13 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     }
   }
 
+  // Richer tech fingerprint from the same HTML: theme(s), plugins, third-party
+  // integrations (analytics / chat / donations / forms), and Google Fonts. Runs
+  // for any reachable site (plugins/themes stay empty for non-WordPress).
+  const tech = buildTechProfile(html);
+  // Prefer the full theme list for WordPress; fall back to the single-slug match.
+  const themes = tech.themes.length ? tech.themes : (wpTheme ? [wpTheme] : []);
+
   // Record the detection on the run profile (non-sensitive).
   const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
   const update: Record<string, unknown> = { detected_platform: platform };
@@ -269,6 +418,10 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     if (wpTheme) update.detected_wp_theme = wpTheme;
     if (mmwReady !== null) update.mmw_take_in_house = mmwReady;
   }
+  if (themes.length) update.detected_themes = themes;
+  if (tech.plugins.length) update.detected_plugins = tech.plugins;
+  if (tech.integrations.length) update.detected_integrations = tech.integrations;
+  if (tech.fonts.length) update.detected_fonts = tech.fonts;
   await db().from('onboarding_runs')
     .update({ client_profile_json: { ...existing, ...update }, updated_at: new Date().toISOString() })
     .eq('id', ctx.run.id);
@@ -285,6 +438,10 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     claimed_intake_type: claimed || null,
     matches_intake: matchesIntake,
     candidates: scores.slice(0, 3),
+    themes,
+    plugins: tech.plugins,
+    integrations: tech.integrations,
+    fonts: tech.fonts,
   };
 }
 
