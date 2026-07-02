@@ -42,9 +42,40 @@ function slackChannelFromBody(body: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Only these MMW packages get the full onboarding setup. Any other package
+ * (Website build/clone, a-la-carte events/webinars/ads, etc.) does NOT run the
+ * engine for now - we can add tailored recipes for those later.
+ */
+const ONBOARDING_PACKAGES = [/smart start/i, /practice pro/i, /whiz works/i];
+
+/** Read the "MMW Package" value from the intake payload (string or array). */
+function packageValue(body: Record<string, unknown>): string {
+  for (const [label, value] of Object.entries(body)) {
+    if (!/package/i.test(label)) continue;
+    if (Array.isArray(value)) return value.join(', ');
+    if (value != null) return String(value);
+  }
+  return '';
+}
+
+function packageNeedsOnboarding(body: Record<string, unknown>): boolean {
+  const val = packageValue(body);
+  return ONBOARDING_PACKAGES.some((re) => re.test(val));
+}
+
 webhooksRouter.post('/webhook/intake', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
+
+  // Gate: only Smart Start / Practice Pro / Whiz Works get onboarding. Accept the
+  // webhook so Zapier sees success, but create no run for other packages.
+  if (!packageNeedsOnboarding(body)) {
+    const pkg = packageValue(body);
+    console.log(`[webhook] intake skipped - package "${pkg || '(none)'}" does not require onboarding`);
+    return res.status(202).json({ accepted: true, skipped: true, reason: `package "${pkg || '(none)'}" does not require onboarding` });
+  }
+
   try {
     const result = await createRun({ recipe: 'full_onboarding', input: body });
     // If Zapier created the channel first and passed the ID, attach it to the run
