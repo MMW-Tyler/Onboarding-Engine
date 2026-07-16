@@ -49,10 +49,13 @@ function slackChannelFromBody(body: Record<string, unknown>): string | null {
  */
 const ONBOARDING_PACKAGES = [/smart start/i, /practice pro/i, /whiz works/i];
 
-/** Read the "MMW Package" value from the intake payload (string or array). */
+/** Read the "MMW Package" value from the intake payload (string or array).
+ *  Zapier's outgoing field name for this question has drifted before (e.g. it
+ *  once sent it as "MMW Services" instead of "MMW Package"), so match on any
+ *  label that plausibly refers to the package/tier, not just "package". */
 function packageValue(body: Record<string, unknown>): string {
   for (const [label, value] of Object.entries(body)) {
-    if (!/package/i.test(label)) continue;
+    if (!/package|service|program|tier/i.test(label)) continue;
     if (Array.isArray(value)) return value.join(', ');
     if (value != null) return String(value);
   }
@@ -72,7 +75,10 @@ webhooksRouter.post('/webhook/intake', async (req, res) => {
   // webhook so Zapier sees success, but create no run for other packages.
   if (!packageNeedsOnboarding(body)) {
     const pkg = packageValue(body);
-    console.log(`[webhook] intake skipped - package "${pkg || '(none)'}" does not require onboarding`);
+    console.log(
+      `[webhook] intake skipped - package "${pkg || '(none)'}" does not require onboarding ` +
+        `(fields received: ${Object.keys(body).join(', ') || '(none)'})`,
+    );
     return res.status(202).json({ accepted: true, skipped: true, reason: `package "${pkg || '(none)'}" does not require onboarding` });
   }
 
