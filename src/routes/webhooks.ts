@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { config } from '../config.js';
 import { db } from '../supabase.js';
 import { createRun, addStepsToRun } from '../engine/runs.js';
-import { toHost, looksLikeDomain } from '../lib/domain.js';
+import { extractWebsiteDomain } from '../lib/domain.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -16,16 +16,6 @@ function verifySecret(req: { header: (n: string) => string | undefined }): boole
   if (!config.webhookSecret) return true; // not configured yet (dev)
   const provided = req.header('x-mmw-secret') ?? req.header('X-MMW-Secret');
   return provided === config.webhookSecret;
-}
-
-/** Pull a website-like value out of a raw form payload and reduce it to a host. */
-function domainFromBody(body: Record<string, unknown>): string | null {
-  for (const [label, value] of Object.entries(body)) {
-    if (/website|url/i.test(label) && typeof value === 'string' && looksLikeDomain(value)) {
-      return toHost(value);
-    }
-  }
-  return null;
 }
 
 /** Pull a Slack channel ID Zapier may pass in the intake payload. Matches any
@@ -102,7 +92,7 @@ webhooksRouter.post('/webhook/intake', async (req, res) => {
 webhooksRouter.post('/webhook/clientform', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const domain = domainFromBody(body);
+  const domain = extractWebsiteDomain(body);
 
   try {
     // Try to attach Wave 2 to the existing Wave 1 run (so it reuses the Slack channel).

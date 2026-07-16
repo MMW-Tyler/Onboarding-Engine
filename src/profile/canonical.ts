@@ -25,6 +25,16 @@ export interface NormalizeResult {
   unmapped: { raw_label: string; raw_value: string; reason: string }[];
 }
 
+/**
+ * Values that mean "no real answer given" rather than an actual answer -
+ * clients type these into free-text questions constantly (confirmed against
+ * live form data: "N/A", "na", "IDK", "?", "not sure", "will provide later").
+ * Deliberately narrow: it never matches "no"/"none", which are legitimate
+ * substantive answers to this form's yes/no questions (do you have other
+ * locations, are you in a chamber of commerce, etc).
+ */
+export const NON_ANSWER = /^(n\/?a\.?|idk|i\s*don'?t\s*know(\s*yet)?|unsure|not\s*sure(\s*yet)?|tbd|to\s*be\s*determined|\?+|will\s*provide\s*later|changing)$/i;
+
 // --- Sales Intake Form (Wave 1) ---------------------------------------------
 // Canonical keys derived from the live Sales Intake Form fields.
 export const INTAKE_KEYS: CanonicalKey[] = [
@@ -204,29 +214,57 @@ function isSensitive(key: string, keys: CanonicalKey[]): boolean {
  * Pure deterministic pass (no AI / no network). Routes each raw field to a
  * canonical key via the ordered rule table; unmatched labels go to `toAI`.
  * Sensitive keys are routed to the `sensitive` bucket. Testable in isolation.
+ *
+ * Two guards beyond plain label->key routing:
+ *  - Non-answer scrubbing: a value that's just "n/a"/"idk"/"?" etc. is
+ *    dropped rather than stored, and reported in `dropped` for human review.
+ *  - First-non-empty-wins: the client form has accumulated duplicate/legacy
+ *    question variants over the years (e.g. three office-hours phrasings). If
+ *    two raw labels map to the same canonical key, the first real value found
+ *    wins; a differing later value is reported in `dropped` rather than
+ *    silently overwriting the real answer.
  */
 export function mapDeterministic(
   raw: Record<string, unknown>,
   schema: 'intake' | 'clientform',
-): { profile: Record<string, string>; sensitive: Record<string, string>; toAI: { raw_label: string; raw_value: string }[] } {
+): {
+  profile: Record<string, string>;
+  sensitive: Record<string, string>;
+  toAI: { raw_label: string; raw_value: string }[];
+  dropped: { raw_label: string; raw_value: string; reason: string }[];
+} {
   const { keys, rules } = SCHEMAS[schema];
   const profile: Record<string, string> = {};
   const sensitive: Record<string, string> = {};
   const toAI: { raw_label: string; raw_value: string }[] = [];
+  const dropped: { raw_label: string; raw_value: string; reason: string }[] = [];
 
   for (const [label, value] of Object.entries(raw)) {
     if (value == null || value === '') continue;
     const v = String(value);
     const norm = normLabel(label);
     const rule = rules.find(([re]) => re.test(norm));
-    if (rule) {
-      if (isSensitive(rule[1], keys)) sensitive[rule[1]] = v;
-      else profile[rule[1]] = v;
-    } else {
+    if (!rule) {
       toAI.push({ raw_label: label, raw_value: v });
+      continue;
     }
+
+    const key = rule[1];
+    if (NON_ANSWER.test(v.trim())) {
+      dropped.push({ raw_label: label, raw_value: v, reason: `non_answer:${key}` });
+      continue;
+    }
+
+    const bucket = isSensitive(key, keys) ? sensitive : profile;
+    if (bucket[key] !== undefined) {
+      if (bucket[key] !== v) {
+        dropped.push({ raw_label: label, raw_value: v, reason: `duplicate_of:${key}` });
+      }
+      continue;
+    }
+    bucket[key] = v;
   }
-  return { profile, sensitive, toAI };
+  return { profile, sensitive, toAI, dropped };
 }
 
 /**
@@ -243,7 +281,7 @@ export async function normalizeProfile(
   const profile = det.profile;
   const sensitive = det.sensitive;
   const toAI = det.toAI;
-  const unmapped: NormalizeResult['unmapped'] = [];
+  const unmapped: NormalizeResult['unmapped'] = [...det.dropped];
 
   // AI fallback for anything deterministic rules missed.
   if (toAI.length > 0) {

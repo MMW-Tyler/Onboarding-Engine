@@ -3,6 +3,7 @@ import { db } from '../../supabase.js';
 import { loadPromptSystem } from '../../lib/anthropic.js';
 import { normalizeProfile } from '../../profile/canonical.js';
 import { toHost, looksLikeDomain } from '../../lib/domain.js';
+import { validateAddress } from '../../lib/places.js';
 
 /**
  * profile.normalize_intake / profile.normalize_clientform (spec section 11, Prompts 1-2).
@@ -31,6 +32,43 @@ async function runNormalize(
   // masked by the redaction helper on every API response (key-name based).
   const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
   const existingRestricted = (existing._restricted ?? {}) as Record<string, unknown>;
+
+  // Client MMW form only asks for the office address as one combined question
+  // (Wave 1's Sales Intake form has separate street/city/state/zip questions,
+  // but Wave 2 does not) - so validate it against Google Places and populate
+  // the structured nap_street/nap_city/nap_state/nap_zip fields that
+  // advicelocal.listings and ghl.a2p_registration read directly. This also
+  // catches client typos (e.g. a mistyped ZIP). Only applied when Places
+  // resolves every component - a partial match never overwrites good data
+  // with a guess, and always falls back silently (logged for review) rather
+  // than blocking the rest of normalization.
+  if (schema === 'clientform' && profile.nap_address) {
+    const rawAddress = profile.nap_address;
+    const bizName = profile.legal_business_name || (existing.office_name as string | undefined);
+    try {
+      const validated = await validateAddress(rawAddress, bizName);
+      if (validated?.complete) {
+        profile.nap_street = validated.street!;
+        profile.nap_city = validated.city!;
+        profile.nap_state = validated.state!;
+        profile.nap_zip = validated.zip!;
+        const rebuilt = `${validated.street}, ${validated.city}, ${validated.state} ${validated.zip}`;
+        if (rebuilt !== rawAddress) {
+          await ctx.logEvent({
+            level: 'info',
+            endpoint: 'profile.validate_address',
+            response_body: { corrected: true, raw: rawAddress, validated: rebuilt, place_id: validated.placeId },
+          });
+        }
+        profile.nap_address = rebuilt;
+      } else {
+        unmapped.push({ raw_label: 'nap_address', raw_value: rawAddress, reason: validated ? 'places_partial_match' : 'places_no_match' });
+      }
+    } catch (err) {
+      unmapped.push({ raw_label: 'nap_address', raw_value: rawAddress, reason: `places_error:${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
   // Wave 1 -> Wave 2 fallbacks: the Sales Intake form doesn't capture
   // focus_services / geo_targets / ideal_patient / differentiators directly, but
   // most of those can be inferred well enough for Wave 2 to produce useful

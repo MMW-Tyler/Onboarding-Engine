@@ -77,3 +77,56 @@ describe('deterministic clientform mapping — sensitive routing', () => {
     expect(profile.nap_email).toBe('office@smiledental.com');
   });
 });
+
+describe('deterministic clientform mapping — non-answer scrubbing (real form junk values)', () => {
+  it('drops n/a-style placeholders instead of storing them, and reports them for review', () => {
+    const clientform: Record<string, string> = {
+      'Where did you do your residency?': 'N/A',
+      'What is Your Lifetime Patient Value $$?': '??',
+      'What are your board-certifications and awards?': 'na',
+    };
+    const { profile, dropped } = mapDeterministic(clientform, 'clientform');
+    expect(profile.residency).toBeUndefined();
+    expect(profile.lifetime_patient_value).toBeUndefined();
+    expect(profile.credentials).toBeUndefined();
+    expect(dropped.map((d) => d.reason)).toEqual([
+      'non_answer:residency',
+      'non_answer:lifetime_patient_value',
+      'non_answer:credentials',
+    ]);
+  });
+
+  it('never scrubs legitimate "No" / "None" answers to yes/no questions', () => {
+    const clientform: Record<string, string> = {
+      'Do you have other locations?  If so please list those below with their correct addresses.': 'No',
+      'Are you a member of your Chamber of Commerce?  Which one(s)?': 'None',
+    };
+    const { profile, dropped } = mapDeterministic(clientform, 'clientform');
+    expect(profile.other_locations).toBe('No');
+    expect(profile.chamber_of_commerce).toBe('None');
+    expect(dropped).toEqual([]);
+  });
+});
+
+describe('deterministic clientform mapping — duplicate/legacy question variants', () => {
+  it('keeps the first non-empty answer when two labels map to the same canonical key', () => {
+    // The form has accumulated multiple office-hours phrasings over the years.
+    const clientform: Record<string, string> = {
+      'What are your office hours that you want listed online?': 'Wed-Sat 10-5',
+      'What are your correct office hours?': 'Mon-Fri 9-5', // legacy duplicate, should NOT win
+    };
+    const { profile, dropped } = mapDeterministic(clientform, 'clientform');
+    expect(profile.office_hours).toBe('Wed-Sat 10-5');
+    expect(dropped).toEqual([{ raw_label: 'What are your correct office hours?', raw_value: 'Mon-Fri 9-5', reason: 'duplicate_of:office_hours' }]);
+  });
+
+  it('does not flag a duplicate when the second occurrence is empty', () => {
+    const clientform: Record<string, string> = {
+      'What are your office hours that you want listed online?': 'Wed-Sat 10-5',
+      'What are the office hours that you want listed online?': '',
+    };
+    const { profile, dropped } = mapDeterministic(clientform, 'clientform');
+    expect(profile.office_hours).toBe('Wed-Sat 10-5');
+    expect(dropped).toEqual([]);
+  });
+});
