@@ -22,6 +22,40 @@
   (<base>px.com then <base>patients.com). To stop all purchases, set
   NAMECHEAP_LIVE=false or RUN_MODE=dry.
 
+## Production URL + Zapier wiring (IMPORTANT - stop asking the user for this)
+
+- **Live service URL: `https://onboarding-engine-h299.onrender.com`**
+  (dashboard at `/`, webhooks at `/webhook/intake` and `/webhook/clientform`).
+- **Phase one (Sales Intake form, Wave 1):** Zapier zap is LIVE. Google Form ->
+  Webhooks by Zapier POST to `/webhook/intake`, JSON, fields mapped BY HAND in
+  the zap. Leave that zap's style alone.
+- **Phase two (Client MMW Onboarding form, Wave 2):** zap posts to
+  `/webhook/clientform` with the Data section left EMPTY so Zapier forwards all
+  form fields verbatim (question text as JSON keys - that is what the label
+  normalizer expects). Header `X-MMW-Secret` = value of `MMW_WEBHOOK_SECRET`
+  from the Render dashboard. The hand-mapped intake zap and this pass-through
+  zap are intentionally different styles; do not "fix" either to match the other.
+
+## Phase two decisions (2026-07-16, from Tyler)
+
+- **No backfill** of historical client-form responses; new submissions only.
+- The client form has changed over the years. The **most recent ~20 responses
+  (Dec 2025 onward) are the source of truth** for the current field set. No
+  longer collected (legacy columns only): email address column, Facebook /
+  Instagram / LinkedIn URLs, 12-month goals, referral questions, lunch spots,
+  chamber of commerce, years of experience, and two of the three office-hours
+  variants. The live hours question is "What are your office hours that you
+  want listed online?".
+- **Validate the NAP office address against Google Places** during value
+  normalization (`GOOGLE_PLACES_API_KEY` is set) - clients make typos (real
+  example: Sereno's ZIP "950032" should be 95032).
+- **First live test client: Sereno** (Sereno Pain Management Medical Group,
+  domain `serenosante.com`, provider Maia Chakerian MD). They submitted the
+  form on 7/16/2026 BEFORE the zap existed, so the zap will never fire for
+  their row. The controlled live test = manually replay their form row as a
+  POST to `/webhook/clientform` once phase-two hardening is done. Auto-attach
+  requires their Wave 1 run's domain to be `serenosante.com`.
+
 ## Deploy setup (managed by the user, not in code)
 
 - Render: one always-on web service, branch `main`, defined by `render.yaml`.
