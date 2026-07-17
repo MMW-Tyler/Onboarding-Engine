@@ -50,12 +50,6 @@ async function runNormalize(
     );
   }
 
-  await ctx.logEvent({
-    level: unmapped.length > 0 ? 'warn' : 'info',
-    endpoint: `profile.normalize_${schema}`,
-    response_body: { mapped: Object.keys(profile), sensitiveKeys: Object.keys(sensitive), unmappedCount: unmapped.length },
-  });
-
   // Merge into the run profile. Sensitive values live under _restricted and are
   // masked by the redaction helper on every API response (key-name based).
   const existing = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
@@ -96,6 +90,14 @@ async function runNormalize(
       unmapped.push({ raw_label: 'nap_address', raw_value: rawAddress, reason: `places_error:${err instanceof Error ? err.message : String(err)}` });
     }
   }
+
+  // Logged after address validation (not right after normalizeProfile) so
+  // unmappedCount reflects any places_error/places_no_match entry it may add.
+  await ctx.logEvent({
+    level: unmapped.length > 0 ? 'warn' : 'info',
+    endpoint: `profile.normalize_${schema}`,
+    response_body: { mapped: Object.keys(profile), sensitiveKeys: Object.keys(sensitive), unmappedCount: unmapped.length },
+  });
 
   // Wave 1 -> Wave 2 fallbacks: the Sales Intake form doesn't capture
   // focus_services / geo_targets / ideal_patient / differentiators directly, but

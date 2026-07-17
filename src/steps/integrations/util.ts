@@ -22,7 +22,12 @@ export function profileOf(run: OnboardingRun): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(p)) {
     if (k === '_restricted') continue;
-    if (v != null) out[k] = String(v);
+    if (v == null) continue;
+    // client_profile_json also holds a few array/object values written by other
+    // steps (e.g. mailgun's DNS record arrays) - String() on those collapses to
+    // "[object Object]" instead of anything useful, so stringify structured
+    // values as JSON and leave everything else as plain String() coercion.
+    out[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
   }
   return out;
 }

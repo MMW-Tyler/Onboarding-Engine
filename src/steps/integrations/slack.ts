@@ -148,11 +148,23 @@ async function postSaleSummaryDry(ctx: StepContext): Promise<Record<string, unkn
   return simulated({ ts: simId('ts'), preview: saleSummaryText(ctx) });
 }
 
+// Internal bookkeeping other steps write into client_profile_json (Mailgun's
+// DNS record arrays, crawl's detected-platform readouts, the assigned warmup
+// inbox) - useful for those steps to read back, but not "what the client
+// said," so they don't belong in a summary meant for reviewing client answers.
+const INTERNAL_PROFILE_KEYS = new Set([
+  'mailgun_sending_dns', 'mailgun_receiving_dns',
+  'detected_platform', 'detected_wp_builder', 'detected_wp_theme',
+  'detected_themes', 'detected_plugins', 'detected_integrations', 'detected_fonts',
+  'warmup_inbox',
+]);
+
 // --- post profile + pinned JSON ---
 function profileMessage(ctx: StepContext): { text: string; json: string } {
   const p = profileOf(ctx.run);
-  const human = ['*Client profile*', ...Object.entries(p).map(([k, v]) => `• ${k}: ${v}`)].join('\n');
-  const json = JSON.stringify(p, null, 2); // non-sensitive only (profileOf excludes _restricted)
+  const clientAnswers = Object.fromEntries(Object.entries(p).filter(([k]) => !INTERNAL_PROFILE_KEYS.has(k)));
+  const human = ['*Client profile*', ...Object.entries(clientAnswers).map(([k, v]) => `• ${k}: ${v}`)].join('\n');
+  const json = JSON.stringify(clientAnswers, null, 2); // non-sensitive, client-answer fields only
   return { text: `${human}\n\n\`\`\`client-profile.json\n${json}\n\`\`\``, json };
 }
 async function postProfileReal(ctx: StepContext): Promise<Record<string, unknown>> {
