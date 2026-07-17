@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { config } from '../config.js';
 import { db } from '../supabase.js';
 import { createRun, addStepsToRun } from '../engine/runs.js';
-import { extractWebsiteDomain } from '../lib/domain.js';
+import { extractWebsiteDomain, toHost, looksLikeDomain } from '../lib/domain.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -89,6 +89,44 @@ webhooksRouter.post('/webhook/intake', async (req, res) => {
   }
 });
 
+/**
+ * Find the Wave 1 run this Client MMW form submission belongs to.
+ *
+ * Exact match on onboarding_runs.domain first (cheap, indexed). But
+ * namecheap.purchase_domain OVERWRITES that column with whatever it actually
+ * bought - which for a new practice is often the <base>px.com / <base>
+ * patients.com fallback, not the domain the client asked for, whenever their
+ * first choice wasn't available. The client's Wave 2 form answer is always
+ * their originally-intended domain (the same one they typed in Wave 1), so an
+ * exact match on the post-purchase `domain` column can never succeed for
+ * those runs. Fall back to comparing against client_profile_json.website_url,
+ * which profile.normalize_intake sets from the client's own answer and which
+ * the purchase step never touches once it's populated.
+ */
+async function findRunIdByDomain(domain: string): Promise<string | null> {
+  const exact = await db()
+    .from('onboarding_runs')
+    .select('id')
+    .eq('domain', domain)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (exact.data?.id) return exact.data.id as string;
+
+  const { data: candidates } = await db()
+    .from('onboarding_runs')
+    .select('id, client_profile_json, created_at')
+    .order('created_at', { ascending: false })
+    .limit(200);
+  for (const row of candidates ?? []) {
+    const websiteUrl = (row.client_profile_json as Record<string, unknown> | null)?.website_url;
+    if (typeof websiteUrl === 'string' && looksLikeDomain(websiteUrl) && toHost(websiteUrl) === domain) {
+      return row.id as string;
+    }
+  }
+  return null;
+}
+
 webhooksRouter.post('/webhook/clientform', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -96,17 +134,7 @@ webhooksRouter.post('/webhook/clientform', async (req, res) => {
 
   try {
     // Try to attach Wave 2 to the existing Wave 1 run (so it reuses the Slack channel).
-    let runId: string | null = null;
-    if (domain) {
-      const { data } = await db()
-        .from('onboarding_runs')
-        .select('id')
-        .eq('domain', domain)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      runId = (data?.id as string) ?? null;
-    }
+    const runId = domain ? await findRunIdByDomain(domain) : null;
 
     if (runId) {
       await db().from('onboarding_runs').update({ raw_clientform_json: body, updated_at: new Date().toISOString() }).eq('id', runId);

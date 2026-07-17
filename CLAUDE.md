@@ -50,11 +50,26 @@
   normalization (`GOOGLE_PLACES_API_KEY` is set) - clients make typos (real
   example: Sereno's ZIP "950032" should be 95032).
 - **First live test client: Sereno** (Sereno Pain Management Medical Group,
-  domain `serenosante.com`, provider Maia Chakerian MD). They submitted the
-  form on 7/16/2026 BEFORE the zap existed, so the zap will never fire for
-  their row. The controlled live test = manually replay their form row as a
-  POST to `/webhook/clientform` once phase-two hardening is done. Auto-attach
-  requires their Wave 1 run's domain to be `serenosante.com`.
+  provider Maia Chakerian MD). They submitted the form on 7/16/2026 BEFORE the
+  zap existed, so the zap will never fire for their row. The controlled live
+  test = manually replay their form row as a POST to `/webhook/clientform`
+  once phase-two hardening is done.
+- **Found via the Wave 1 run log (2026-07-17): Sereno's `onboarding_runs.domain`
+  is `serenosantepx.com`, not `serenosante.com`.** `serenosante.com` wasn't
+  available at purchase time, so namecheap.purchase_domain bought the `px.com`
+  fallback and overwrote `onboarding_runs.domain` with it (this is normal,
+  documented behavior - see "Runtime defaults" above). Sereno's Wave 2 form
+  answer for their website is `serenosante.com` (their real, intended domain -
+  same as what they typed in Wave 1, preserved in
+  `client_profile_json.website_url`). This is NOT Sereno-specific: any client
+  whose first-choice domain wasn't available at Wave 1 purchase time will have
+  this same domain/website_url split. `webhooks.ts`'s `findRunIdByDomain` now
+  falls back to matching on `client_profile_json.website_url` when the exact
+  `domain` match fails, specifically to handle this. There is a suspicious
+  unnamed `wave2_research` run in the dashboard (created 5:37 PM, after
+  Sereno's 4:23 PM form submission) that looks like fallout from this exact
+  mismatch on a prior manual attempt - worth checking before assuming a fresh
+  replay will attach cleanly.
 
 ## Deploy setup (managed by the user, not in code)
 
