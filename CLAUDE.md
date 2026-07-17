@@ -30,11 +30,28 @@
   Webhooks by Zapier POST to `/webhook/intake`, JSON, fields mapped BY HAND in
   the zap. Leave that zap's style alone.
 - **Phase two (Client MMW Onboarding form, Wave 2):** zap posts to
-  `/webhook/clientform` with the Data section left EMPTY so Zapier forwards all
-  form fields verbatim (question text as JSON keys - that is what the label
-  normalizer expects). Header `X-MMW-Secret` = value of `MMW_WEBHOOK_SECRET`
-  from the Render dashboard. The hand-mapped intake zap and this pass-through
-  zap are intentionally different styles; do not "fix" either to match the other.
+  `/webhook/clientform`. Header `X-MMW-Secret` = value of `MMW_WEBHOOK_SECRET`
+  from the Render dashboard.
+- **CORRECTION (2026-07-17): "leave the Data section empty" does NOT forward
+  question-text-keyed fields — it was never actually verified against a real
+  payload, and it's wrong.** Confirmed from a real webhook log: with Data left
+  empty, Zapier forwards the RAW Google Forms API response - answers keyed by
+  internal 8-char `questionId` hashes (`"18459843"`, `"28998979"`, ...) plus
+  API metadata (`id`, `createTime`, `responseId`, `lastSubmittedTime`), not
+  question text. The label normalizer can't map any of that (confirmed: 0/40
+  fields mapped on a real attempt, AI fallback caught 0/40 too). **Do not
+  trust this zap is wired correctly until you've seen the normalizer actually
+  map a real submission's fields — check the dashboard run's
+  `profile.normalize_clientform` step output for `mapped_keys` after a live
+  test; if it's empty, the zap still needs fixing.**
+  Likely fix (UNVERIFIED, try before assuming): switch the trigger from
+  "Google Forms - New Form Response" to "Google Sheets - New Spreadsheet Row"
+  pointed at the same linked responses sheet (the CSV export IS that sheet),
+  since Sheets' API returns column-header-keyed rows rather than Forms'
+  internal ID-keyed answers - that should give question text as keys without
+  hand-mapping 40 fields. Then insert the trigger step's whole row as the
+  webhook's JSON body rather than individual fields. Test and inspect one real
+  payload before calling it done.
 
 ## Phase two decisions (2026-07-16, from Tyler)
 

@@ -22,6 +22,34 @@ async function runNormalize(
 
   const { profile, sensitive, unmapped } = await normalizeProfile(raw, schema, systemText);
 
+  // Guard against a malformed payload rather than silently succeeding with an
+  // empty profile: if the webhook handed us a real, multi-field submission but
+  // NOTHING mapped (deterministic rules and the AI fallback both missed every
+  // field), the raw labels almost certainly aren't question text at all - e.g.
+  // a Zapier zap forwarding the underlying form-API response (fields keyed by
+  // internal id, not label) instead of the mapped question text it expects.
+  // Fail loudly (retries, then flags the step - visible in the dashboard and
+  // cascades to block the rest of Wave 2) instead of quietly producing a run
+  // with no real client data. Dashboard manual test-fires intentionally send
+  // only 1-2 fields, so the >=5 floor keeps this from tripping on those.
+  const rawCount = Object.keys(raw).length;
+  const mappedCount = Object.keys(profile).length + Object.keys(sensitive).length;
+  if (rawCount >= 5 && mappedCount === 0) {
+    const sampleLabels = Object.keys(raw).slice(0, 5);
+    await ctx.logEvent({
+      level: 'error',
+      endpoint: `profile.normalize_${schema}`,
+      parsed_error:
+        `received ${rawCount} raw fields but mapped none - the payload's field labels don't look like real ` +
+        `question text (sample: ${sampleLabels.join(', ')}). This usually means the form's webhook is forwarding ` +
+        `raw form-API data instead of question-text-keyed fields - check the zap/integration config before retrying.`,
+    });
+    throw new Error(
+      `profile.normalize_${schema}: 0/${rawCount} fields mapped - raw labels look malformed ` +
+        `(e.g. "${sampleLabels[0]}"), not question text. Check the webhook's field mapping.`,
+    );
+  }
+
   await ctx.logEvent({
     level: unmapped.length > 0 ? 'warn' : 'info',
     endpoint: `profile.normalize_${schema}`,
