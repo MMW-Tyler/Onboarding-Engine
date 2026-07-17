@@ -188,6 +188,8 @@
 const $ = (id) => document.getElementById(id);
 let selectedRun = null;
 let recipes = {};
+let lastRun = null;
+let lastEvents = [];
 
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.style.display = 'block';
@@ -299,6 +301,11 @@ async function loadDetail() {
   if (!selectedRun) return;
   try {
     const { run, steps, events } = await api('/runs/' + selectedRun);
+    lastRun = run; lastEvents = events;
+    // The 3s auto-refresh rebuilds this whole pane, which would otherwise
+    // re-collapse the log and drop any in-progress text selection every time.
+    // Remember whether the log was open across the rebuild.
+    const logWasOpen = $('detail').querySelector('details.techlog')?.open;
     const legend = ['succeeded','simulated','running','blocked','flagged','skipped','pending']
       .map((s) => '<span><span class="dot" style="background:var(--' +
         ({succeeded:'green',simulated:'blue',running:'amber',blocked:'amber',flagged:'red',skipped:'grey',pending:'grey'})[s] +
@@ -316,7 +323,11 @@ async function loadDetail() {
       run.recipe + ' · ' + run.mode + '</div>' +
       '<div class="legend">' + legend + '</div>' +
       '<div class="chips">' + steps.map(chip).join('') + '</div>' +
-      '<details class="adv"><summary>Technical log (' + events.length + ' events)</summary>' +
+      '<details class="adv techlog"><summary>Technical log (' + events.length + ' events)</summary>' +
+      '<div class="row-actions" style="margin:8px 0;">' +
+      '<button class="tiny" onclick="copyLog()" title="Copy the full log below as plain text">copy log</button>' +
+      '<button class="tiny" onclick="downloadLog()" title="Download the full log as a .txt file named for this client">download log</button>' +
+      '</div>' +
       '<div class="tbl-scroll"><table><tr><th>time</th><th>lvl</th><th>step</th><th>att</th><th>endpoint</th><th>status</th><th>detail</th></tr>' +
       events.map((e) =>
         '<tr><td>' + new Date(e.ts).toLocaleTimeString() + '</td>' +
@@ -327,7 +338,66 @@ async function loadDetail() {
         '<td><pre>' + (e.parsed_error || JSON.stringify(e.response_body || e.request_redacted || '')) + '</pre></td></tr>'
       ).join('') + '</table></div></details>';
     $('detail').innerHTML = html;
+    if (logWasOpen) $('detail').querySelector('details.techlog').open = true;
   } catch (e) { $('detail').innerHTML = '<div class="empty">detail error: ' + e.message + '</div>'; }
+}
+
+/** Plain-text rendering of the currently loaded run's log - same shape as the
+ *  on-screen table, but flat text so it's easy to paste elsewhere or attach. */
+function logAsText() {
+  if (!lastRun) return '';
+  const lines = [
+    'Run: ' + (lastRun.client_name || '(no name)') + '  ·  ' + lastRun.recipe + '  ·  ' + lastRun.mode,
+    'Run ID: ' + lastRun.id,
+    '',
+    ['time', 'lvl', 'step', 'att', 'endpoint', 'status', 'detail'].join('\t'),
+  ];
+  lastEvents.forEach((e) => {
+    lines.push([
+      new Date(e.ts).toLocaleTimeString(),
+      e.level,
+      e.step_key,
+      e.attempt,
+      e.endpoint || '',
+      e.response_status || '',
+      e.parsed_error || JSON.stringify(e.response_body || e.request_redacted || ''),
+    ].join('\t'));
+  });
+  return lines.join('\n');
+}
+
+async function copyLog() {
+  const text = logAsText();
+  if (!text) { toast('no log loaded'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('log copied to clipboard (' + lastEvents.length + ' events)');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    toast('log copied to clipboard');
+  }
+}
+
+function slugForFilename(name) {
+  return (name || 'run').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'run';
+}
+
+function downloadLog() {
+  const text = logAsText();
+  if (!text) { toast('no log loaded'); return; }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = slugForFilename(lastRun.client_name) + '-log-' + stamp + '.txt';
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('downloaded ' + filename);
 }
 
 async function retryStep(ev, key) {
