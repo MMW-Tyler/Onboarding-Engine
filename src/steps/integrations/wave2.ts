@@ -5,7 +5,7 @@ import { config } from '../../config.js';
 import { draft, loadPromptSystem } from '../../lib/anthropic.js';
 import { searchPlace } from '../../lib/places.js';
 import { profileOf, siblingOutput, simulated, chunkText } from './util.js';
-import { toHost } from '../../lib/domain.js';
+import { toHost, looksLikeDomain } from '../../lib/domain.js';
 import { slackPost as callSlackApi } from './slack.js';
 
 /**
@@ -93,7 +93,13 @@ async function crawlSite(ctx: StepContext, host: string): Promise<{ pages: Crawl
 
 async function crawlSiteReport(ctx: StepContext): Promise<Record<string, unknown>> {
   const p = profileOf(ctx.run);
-  const host = (ctx.run.domain as string | undefined) || (p.website_url ? toHost(p.website_url) : '');
+  // Prefer the client's stated website over ctx.run.domain: namecheap.purchase_domain
+  // overwrites run.domain with whatever it actually bought (often a <base>px.com
+  // fallback that has no real site on it yet), while profile.website_url is the
+  // client's own answer - the site we actually want to audit. Only fall back to
+  // run.domain when the client didn't give a usable website (e.g. a brand-new
+  // practice with no existing site).
+  const host = (p.website_url && looksLikeDomain(p.website_url) ? toHost(p.website_url) : '') || (ctx.run.domain as string | undefined) || '';
   // SOP #3: no reachable site -> skip (no API call).
   if (!host || !host.includes('.')) {
     return { skipped: true, reason: 'no website to crawl' };
@@ -236,6 +242,25 @@ async function upsertWave2Canvas(ctx: StepContext, channel: string, markdown: st
   }
 }
 
+/**
+ * Direct clickable link to a canvas - relying on Slack's UI to surface the
+ * channel's "Canvas" tab isn't reliable enough on its own (clients can need a
+ * refresh to pick up a newly-created one), so build a real URL as a backup.
+ * canvases.create's own response has no url field; auth.test gives the team
+ * id needed to construct Slack's standard canvas permalink. Returns null
+ * (never throws) so a link failure never blocks the rollup from posting.
+ */
+async function canvasLink(ctx: StepContext, canvasId: string): Promise<string | null> {
+  try {
+    const res = await callSlackApi<any>(ctx, 'auth.test', {});
+    const teamId = res.team_id as string | undefined;
+    return teamId ? `https://app.slack.com/docs/${teamId}/${canvasId}` : null;
+  } catch (err) {
+    await ctx.logEvent({ level: 'warn', endpoint: 'slack.auth.test', parsed_error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
 async function postSlack(
   ctx: StepContext,
   channel: string,
@@ -292,18 +317,19 @@ async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
   // API isn't available (e.g. the Slack app is missing the canvases:write
   // scope) so the drafts are never silently lost.
   const canvasId = await upsertWave2Canvas(ctx, channel, buildCanvasMarkdown(client, byKey));
+  const link = canvasId ? await canvasLink(ctx, canvasId) : null;
 
   const summaryBlocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `🔬 Wave 2 research ready — ${client}`, emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: canvasId
-      ? `All outputs below are *drafts* — review and approve before use. Full drafts are in the *📌 Canvas* tab at the top of this channel.`
+      ? `All outputs below are *drafts* — review and approve before use. Full drafts: ${link ? `<${link}|Open the Wave 2 Research canvas>` : 'see the *📌 Canvas* tab at the top of this channel'}.`
       : `All outputs below are *drafts* — review and approve before use. The full drafts are in this thread 🧵 _(canvas unavailable — see the technical log)_.` } },
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:clipboard: *Deliverables*\n${lines.join('\n')}` } },
     { type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${ctx.run.id}\`` }] },
   ];
   const fallback = canvasId
-    ? `Wave 2 research ready for review — ${client} (see the Canvas tab).`
+    ? `Wave 2 research ready for review — ${client} (${link ?? 'see the Canvas tab'}).`
     : `Wave 2 research ready for review — ${client} (drafts in thread).`;
 
   const rootTs = await postSlack(ctx, channel, fallback, { blocks: summaryBlocks });
@@ -326,7 +352,7 @@ async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
     }
   }
 
-  return { posted: true, ts: rootTs, canvas_id: canvasId, drafts_delivered: canvasId ? DRAFT_STEPS.length : postedDrafts };
+  return { posted: true, ts: rootTs, canvas_id: canvasId, canvas_link: link, drafts_delivered: canvasId ? DRAFT_STEPS.length : postedDrafts };
 }
 
 async function wave2RollupDry(ctx: StepContext): Promise<Record<string, unknown>> {
