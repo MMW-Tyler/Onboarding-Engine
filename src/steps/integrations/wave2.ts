@@ -4,8 +4,9 @@ import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
 import { draft, loadPromptSystem } from '../../lib/anthropic.js';
 import { searchPlace } from '../../lib/places.js';
-import { profileOf, siblingOutput, simulated } from './util.js';
+import { profileOf, siblingOutput, simulated, chunkText } from './util.js';
 import { toHost } from '../../lib/domain.js';
+import { slackPost as callSlackApi } from './slack.js';
 
 /**
  * Wave 2 AI research + rollup (spec section 08/14, Prompts 3-6). All AI steps are
@@ -153,19 +154,86 @@ const STATUS_STEPS = [
   'ghl.a2p_registration',
 ];
 
-/** Split a long body into Slack-safe chunks (mrkdwn ~3500 chars/message). */
-function chunk(text: string, size = 3500): string[] {
-  const out: string[] = [];
-  let rest = text.trim();
-  while (rest.length > size) {
-    // Prefer to break on a paragraph/line boundary near the limit.
-    let cut = rest.lastIndexOf('\n', size);
-    if (cut < size * 0.5) cut = size;
-    out.push(rest.slice(0, cut));
-    rest = rest.slice(cut);
+// Emoji per deliverable, used both in the canvas headers and the in-thread
+// fallback path.
+const DRAFT_EMOJI: Record<string, string> = {
+  'gbp.optimize_plan': '📍',
+  'crawl.site_report': '🔍',
+  'seo.roadmap': '🗺️',
+  'research.press_topics': '📰',
+  'research.content_calendar': '🗓️',
+};
+
+/** Pull a draft step's rendered body + a "not available" note when it has none. */
+function draftBody(byKey: Map<string, any>, key: string): { body: string; note: string | null } {
+  const s = byKey.get(key);
+  const out = (s?.output_json ?? {}) as Record<string, unknown>;
+  const body = typeof out.draft === 'string' ? out.draft.trim() : '';
+  if (body) return { body, note: null };
+  const status = (s?.status as string) ?? 'pending';
+  const reason = typeof out.reason === 'string' ? ` — ${out.reason}` : '';
+  return { body: '', note: `_${status}${reason}_` };
+}
+
+/**
+ * All five Wave 2 drafts, combined into one markdown document instead of
+ * being pasted into the channel as several thousand-word thread replies -
+ * the actual "wall of text" this was designed to avoid. One canvas per run,
+ * kept up to date by replacing its content on every rollup.
+ */
+function buildCanvasMarkdown(client: string, byKey: Map<string, any>): string {
+  const parts: string[] = [`# Wave 2 research — ${client}`, '', '_Drafts below — review and approve before use._'];
+  for (const d of DRAFT_STEPS) {
+    const { body, note } = draftBody(byKey, d.key);
+    parts.push('', '---', '', `## ${DRAFT_EMOJI[d.key] ?? '📄'} ${d.title}`, '', body || note || '_no output_');
   }
-  if (rest.trim()) out.push(rest);
-  return out;
+  return parts.join('\n');
+}
+
+/**
+ * Create (or update) the run's Wave 2 canvas. Idempotent across reruns: the
+ * canvas id is stashed in client_profile_json (no schema change needed) and
+ * reused on subsequent rollups by replacing its whole content. Returns null
+ * (never throws) if the canvas API isn't available - e.g. the Slack app
+ * doesn't have the `canvases:write` scope yet - so the caller can fall back
+ * to the old in-thread posting instead of losing the drafts entirely.
+ */
+async function upsertWave2Canvas(ctx: StepContext, channel: string, markdown: string): Promise<string | null> {
+  const profile = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
+  const existingId = profile.wave2_canvas_id as string | undefined;
+
+  if (existingId) {
+    try {
+      await callSlackApi(ctx, 'canvases.edit', {
+        canvas_id: existingId,
+        changes: [{ operation: 'replace', document_content: { type: 'markdown', markdown } }],
+      });
+      return existingId;
+    } catch (err) {
+      await ctx.logEvent({ level: 'warn', endpoint: 'slack.canvases.edit', parsed_error: err instanceof Error ? err.message : String(err) });
+      // Fall through and try creating a fresh one (e.g. the prior canvas was deleted).
+    }
+  }
+
+  try {
+    const res = await callSlackApi<any>(ctx, 'conversations.canvases.create', {
+      channel_id: channel,
+      document_content: { type: 'markdown', markdown },
+    });
+    const canvasId = res.canvas_id as string;
+    await db().from('onboarding_runs').update({
+      client_profile_json: { ...profile, wave2_canvas_id: canvasId },
+      updated_at: new Date().toISOString(),
+    }).eq('id', ctx.run.id);
+    return canvasId;
+  } catch (err) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'slack.conversations.canvases.create',
+      parsed_error: `${err instanceof Error ? err.message : String(err)} - falling back to posting drafts in-thread`,
+    });
+    return null;
+  }
 }
 
 async function postSlack(
@@ -208,49 +276,57 @@ async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
     .in('step_key', allKeys);
   const byKey = new Map((steps ?? []).map((s) => [s.step_key as string, s]));
 
-  const client = ctx.run.client_name ?? 'client';
+  const client = (ctx.run.client_name as string | undefined) ?? 'client';
   const lines = allKeys.map((k) => {
     const s = byKey.get(k);
     const status = (s?.status as string) ?? 'pending';
     return `${statusEmoji(status)}  *${STEP_LABELS[k] ?? k}*  —  ${status}`;
   });
+
+  const channel = ctx.run.slack_channel_id as string | undefined;
+  if (!channel) return { posted: false, reason: 'no slack channel on run' };
+
+  // Put the full drafts in one canvas attached to the channel instead of
+  // pasting several thousand-word AI drafts into the channel as chunked
+  // thread replies. Falls back to the old in-thread posting if the canvas
+  // API isn't available (e.g. the Slack app is missing the canvases:write
+  // scope) so the drafts are never silently lost.
+  const canvasId = await upsertWave2Canvas(ctx, channel, buildCanvasMarkdown(client, byKey));
+
   const summaryBlocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `🔬 Wave 2 research ready — ${client}`, emoji: true } },
-    { type: 'section', text: { type: 'mrkdwn', text: `All outputs below are *drafts* — review and approve before use. The full drafts are in this thread 🧵` } },
+    { type: 'section', text: { type: 'mrkdwn', text: canvasId
+      ? `All outputs below are *drafts* — review and approve before use. Full drafts are in the *📌 Canvas* tab at the top of this channel.`
+      : `All outputs below are *drafts* — review and approve before use. The full drafts are in this thread 🧵 _(canvas unavailable — see the technical log)_.` } },
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:clipboard: *Deliverables*\n${lines.join('\n')}` } },
     { type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${ctx.run.id}\`` }] },
   ];
-  const fallback = `Wave 2 research ready for review — ${client} (drafts in thread).`;
+  const fallback = canvasId
+    ? `Wave 2 research ready for review — ${client} (see the Canvas tab).`
+    : `Wave 2 research ready for review — ${client} (drafts in thread).`;
 
-  const channel = ctx.run.slack_channel_id as string | undefined;
-  if (!channel) return { posted: false, reason: 'no slack channel on run', summary: fallback };
-
-  // 1) Post the summary; everything else threads under it to keep the channel tidy.
   const rootTs = await postSlack(ctx, channel, fallback, { blocks: summaryBlocks });
 
-  // 2) Post each available draft as threaded reply(ies).
   let postedDrafts = 0;
-  for (const d of DRAFT_STEPS) {
-    const s = byKey.get(d.key);
-    const out = (s?.output_json ?? {}) as Record<string, unknown>;
-    const body = typeof out.draft === 'string' ? out.draft.trim() : '';
-    if (!body) {
-      if (s && (s.status === 'skipped' || s.status === 'flagged' || s.status === 'failed')) {
-        const reason = typeof out.reason === 'string' ? ` — ${out.reason}` : '';
-        await postSlack(ctx, channel, `📄 *${d.title}*\n_${s.status}${reason}_`, { thread_ts: rootTs });
+  if (!canvasId) {
+    // Fallback: post each available draft as threaded reply(ies), same as before.
+    for (const d of DRAFT_STEPS) {
+      const { body, note } = draftBody(byKey, d.key);
+      if (!body) {
+        if (note) await postSlack(ctx, channel, `📄 *${d.title}*\n${note}`, { thread_ts: rootTs });
+        continue;
       }
-      continue;
+      const parts = chunkText(body, 3500);
+      for (let i = 0; i < parts.length; i++) {
+        const header = parts.length > 1 ? `📄 *${d.title}*  ·  _part ${i + 1}/${parts.length}_` : `📄 *${d.title}*`;
+        await postSlack(ctx, channel, `${header}\n\n${parts[i]}`, { thread_ts: rootTs });
+      }
+      postedDrafts++;
     }
-    const parts = chunk(body);
-    for (let i = 0; i < parts.length; i++) {
-      const header = parts.length > 1 ? `📄 *${d.title}*  ·  _part ${i + 1}/${parts.length}_` : `📄 *${d.title}*`;
-      await postSlack(ctx, channel, `${header}\n\n${parts[i]}`, { thread_ts: rootTs });
-    }
-    postedDrafts++;
   }
 
-  return { posted: true, ts: rootTs, drafts_delivered: postedDrafts };
+  return { posted: true, ts: rootTs, canvas_id: canvasId, drafts_delivered: canvasId ? DRAFT_STEPS.length : postedDrafts };
 }
 
 async function wave2RollupDry(ctx: StepContext): Promise<Record<string, unknown>> {

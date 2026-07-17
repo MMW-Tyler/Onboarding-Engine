@@ -2,7 +2,8 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { profileOf, simId, simulated, slugifyChannel } from './util.js';
+import { profileOf, simId, simulated, slugifyChannel, chunkText } from './util.js';
+import { SCHEMAS } from '../../profile/canonical.js';
 
 /**
  * Slack workers (spec section 11): create the client channel, post the sale
@@ -18,7 +19,7 @@ function authHeader(): Record<string, string> {
   return { authorization: `Bearer ${config.slack.botToken()}` };
 }
 
-async function slackPost<T = any>(ctx: StepContext, method: string, payload: unknown): Promise<T> {
+export async function slackPost<T = any>(ctx: StepContext, method: string, payload: unknown): Promise<T> {
   const res = await callApi<any>(ctx, `${SLACK}/${method}`, `slack.${method}`, {
     method: 'POST',
     headers: authHeader(),
@@ -156,21 +157,126 @@ const INTERNAL_PROFILE_KEYS = new Set([
   'mailgun_sending_dns', 'mailgun_receiving_dns',
   'detected_platform', 'detected_wp_builder', 'detected_wp_theme',
   'detected_themes', 'detected_plugins', 'detected_integrations', 'detected_fonts',
-  'warmup_inbox',
+  'warmup_inbox', 'wave2_canvas_id',
 ]);
 
 // --- post profile + pinned JSON ---
-function profileMessage(ctx: StepContext): { text: string; json: string } {
+
+// Pretty label for each canonical key, pulled from the single source of truth
+// (profile/canonical.ts's CanonicalKey.description) instead of a second,
+// hand-maintained label list that would drift out of sync with it.
+const KEY_LABELS: Record<string, string> = Object.fromEntries(
+  [...SCHEMAS.intake.keys, ...SCHEMAS.clientform.keys].map((k) => [k.key, k.description]),
+);
+function labelFor(key: string): string {
+  return KEY_LABELS[key] ?? key;
+}
+
+/**
+ * Groups the profile into a scannable, sectioned summary instead of one flat
+ * bullet dump in whatever order the merge happened to produce - the actual
+ * "wall of text" complaint. Order is most-wanted-first. A key not listed here
+ * still shows, bucketed into "Other" at the end, so nothing silently
+ * disappears if a new canonical key gets added later without updating this.
+ */
+const PROFILE_GROUPS: { title: string; emoji: string; keys: string[] }[] = [
+  { title: 'Practice', emoji: '🏥', keys: [
+    'office_name', 'legal_business_name', 'client_specialty', 'package',
+    'contract_length', 'start_date', 'invoice_amount', 'special_additions', 'book_to_mail',
+  ] },
+  { title: 'Point of contact', emoji: '👤', keys: [
+    'doctor_first_name', 'doctor_last_name', 'doctor_email', 'doctor_mobile',
+    'office_manager_name', 'office_manager_email', 'point_person', 'contact_phone', 'contact_email',
+  ] },
+  { title: 'Location', emoji: '📍', keys: [
+    'nap_address', 'nap_street', 'nap_city', 'nap_state', 'nap_zip', 'nap_phone', 'nap_email', 'other_locations',
+  ] },
+  { title: 'Online presence', emoji: '🌐', keys: [
+    'website_url', 'website_build_type', 'website_build_notes',
+    'youtube_url', 'facebook_url', 'instagram_url', 'linkedin_url',
+  ] },
+  { title: 'Marketing & positioning', emoji: '🎯', keys: [
+    'usp_reason', 'focus_services', 'ideal_patient', 'differentiators', 'credentials', 'providers', 'goals_12mo',
+  ] },
+  { title: 'Business details', emoji: '📊', keys: [
+    'monthly_revenue', 'lifetime_patient_value', 'insurance_vs_cash', 'financing_options',
+    'year_founded', 'geo_targets', 'office_hours', 'email_count', 'chamber_of_commerce',
+    'licensed_states', 'years_experience',
+  ] },
+  { title: 'Personal & story', emoji: '💬', keys: [
+    'hobbies', 'birthdays', 'undergrad', 'residency', 'medical_school', 'community_groups',
+  ] },
+  { title: 'Program terms', emoji: '📝', keys: ['agreement_ack', 'referral_interest', 'referral_doctors'] },
+  { title: 'Submission', emoji: '🕓', keys: ['submitted_at'] },
+];
+
+/** A group's rendered text can occasionally exceed Slack's ~3000-char
+ *  per-block limit (a long narrative answer); split into multiple blocks. */
+function sectionBlocksFor(header: string, lines: string[]): unknown[] {
+  const body = lines.join('\n');
+  if (`${header}\n${body}`.length <= 2900) {
+    return [{ type: 'section', text: { type: 'mrkdwn', text: `${header}\n${body}` } }];
+  }
+  const parts = chunkText(body, 2800);
+  return parts.map((text, i) => ({
+    type: 'section',
+    text: { type: 'mrkdwn', text: i === 0 ? `${header}\n${text}` : `_${header.replace(/\*/g, '')} (cont'd)_\n${text}` },
+  }));
+}
+
+/** Group + render the profile into Block Kit sections, mirroring the Wave 1
+ *  roll-up's visual style, instead of one flat, hard-to-scan bullet list. */
+function groupedProfileBlocks(p: Record<string, string>): unknown[] {
+  const used = new Set<string>();
+  const blocks: unknown[] = [];
+
+  for (const group of PROFILE_GROUPS) {
+    const lines = group.keys
+      .filter((k) => p[k] != null)
+      .map((k) => { used.add(k); return `• *${labelFor(k)}:* ${p[k]}`; });
+    if (lines.length === 0) continue;
+    blocks.push(...sectionBlocksFor(`${group.emoji} *${group.title}*`, lines));
+  }
+
+  const leftoverKeys = Object.keys(p).filter((k) => !used.has(k));
+  if (leftoverKeys.length > 0) {
+    const lines = leftoverKeys.map((k) => `• *${labelFor(k)}:* ${p[k]}`);
+    blocks.push(...sectionBlocksFor('🗂️ *Other*', lines));
+  }
+
+  return blocks;
+}
+
+/** JSON code block, also split defensively for very large profiles. */
+function jsonBlocks(json: string): unknown[] {
+  if (json.length <= 2800) {
+    return [{ type: 'section', text: { type: 'mrkdwn', text: `\`\`\`client-profile.json\n${json}\n\`\`\`` } }];
+  }
+  const parts = chunkText(json, 2700);
+  return parts.map((part, i) => ({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `\`\`\`client-profile.json${parts.length > 1 ? ` (part ${i + 1}/${parts.length})` : ''}\n${part}\n\`\`\`` },
+  }));
+}
+
+function profileMessage(ctx: StepContext): { blocks: unknown[]; fallback: string; json: string } {
   const p = profileOf(ctx.run);
   const clientAnswers = Object.fromEntries(Object.entries(p).filter(([k]) => !INTERNAL_PROFILE_KEYS.has(k)));
-  const human = ['*Client profile*', ...Object.entries(clientAnswers).map(([k, v]) => `• ${k}: ${v}`)].join('\n');
   const json = JSON.stringify(clientAnswers, null, 2); // non-sensitive, client-answer fields only
-  return { text: `${human}\n\n\`\`\`client-profile.json\n${json}\n\`\`\``, json };
+  const client = (ctx.run.client_name as string | undefined) ?? clientAnswers.office_name ?? 'client';
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: `📋 Client profile — ${client}`, emoji: true } },
+    ...groupedProfileBlocks(clientAnswers),
+    { type: 'divider' },
+    ...jsonBlocks(json),
+  ];
+  return { blocks, fallback: `Client profile — ${client}`, json };
 }
 async function postProfileReal(ctx: StepContext): Promise<Record<string, unknown>> {
   const ch = await channelId(ctx);
-  const { text, json } = profileMessage(ctx);
-  const res = await slackPost<any>(ctx, 'chat.postMessage', { channel: ch, text, mrkdwn: true });
+  const { blocks, fallback, json } = profileMessage(ctx);
+  const res = await slackPost<any>(ctx, 'chat.postMessage', { channel: ch, text: fallback, blocks, mrkdwn: true });
   // Pin the profile message so it's the canonical machine-readable record in-channel.
   try {
     await slackPost(ctx, 'pins.add', { channel: ch, timestamp: res.ts });

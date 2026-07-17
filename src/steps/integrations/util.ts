@@ -57,3 +57,18 @@ export function slugifyChannel(name: string, prefix = 'client-'): string {
     .slice(0, 70);
   return (prefix + (slug || 'unnamed')).slice(0, 80);
 }
+
+/** Split long text into chunks that fit Slack's per-message/per-block size limits. */
+export function chunkText(text: string, size = 2800): string[] {
+  const out: string[] = [];
+  let rest = text.trim();
+  while (rest.length > size) {
+    // Prefer to break on a paragraph/line boundary near the limit.
+    let cut = rest.lastIndexOf('\n', size);
+    if (cut < size * 0.5) cut = size;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.trim()) out.push(rest);
+  return out;
+}
