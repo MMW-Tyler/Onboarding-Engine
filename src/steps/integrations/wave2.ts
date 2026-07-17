@@ -63,14 +63,26 @@ async function crawlSite(ctx: StepContext, host: string): Promise<{ pages: Crawl
   const home = await fetchPage(base);
   if (!home) return { pages: [], nav: [] };
 
-  // Discover a handful of internal links from the homepage.
+  // Discover a handful of internal links from the homepage. Only real <a href>
+  // navigation links - matching any href= at all also catches WordPress's (and
+  // similar CMSs') auto-injected <head> boilerplate (RSS feed discovery, REST
+  // API discovery, oEmbed), which sits before the real <nav> in the document
+  // and was filling the whole crawl budget with non-content system endpoints
+  // instead of real pages.
+  const JUNK_PATH = /\/(feed|wp-json|wp-admin|wp-content|wp-includes|xmlrpc\.php)(\/|$|\?)|[?&]attachment_id=|\/embed\/?$/i;
   const links = new Set<string>();
-  const re = /href="([^"#]+)"/gi;
+  const re = /<a\b[^>]*\bhref="([^"#]+)"/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(home.html)) && links.size < 12) {
     let href = m[1]!;
     if (href.startsWith('/')) href = base + href;
-    if (href.startsWith(base) && !/\.(png|jpe?g|gif|svg|pdf|css|js|webp|ico)(\?|$)/i.test(href)) links.add(href.split('#')[0]!);
+    if (
+      href.startsWith(base) &&
+      !/\.(png|jpe?g|gif|svg|pdf|css|js|webp|ico)(\?|$)/i.test(href) &&
+      !JUNK_PATH.test(href)
+    ) {
+      links.add(href.split('#')[0]!);
+    }
   }
   const targets = [base, ...[...links].filter((l) => l !== base).slice(0, 6)];
 
