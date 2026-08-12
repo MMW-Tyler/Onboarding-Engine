@@ -88,6 +88,25 @@
   mismatch on a prior manual attempt - worth checking before assuming a fresh
   replay will attach cleanly.
 
+## Bad website answers on the intake form (2026-08-12)
+
+- The Sales Intake form's Website URL field gets filled in wrong regularly - a
+  live run stalled because the rep typed an **email address** there. Everything
+  domain-shaped reads `client_profile_json.website_url`, so it is now resolved
+  once, in `profile.normalize_intake`, via `websiteHostFrom()` in
+  `src/lib/domain.ts`: a work email yields its host (`info@foo.com` -> `foo.com`),
+  a real site typed next to an email wins over the email, and a personal mailbox
+  (`...@gmail.com`) or junk yields **nothing** - `website_url` is left unset and
+  the step logs a warn rather than storing a bogus value.
+- `namecheap.purchase_domain`'s base label goes through the same resolver plus a
+  `NON_BRAND_LABELS` blocklist, so a personal-email answer can never spend money
+  on `gmailpx.com` / `facebookpx.com`; it falls back to slugging the practice name.
+- **To fix a stranded run:** dashboard run detail -> **fix website** (or
+  `POST /runs/:id/website {"website":"example.com"}`), then **resume**. It sets
+  `profile.website_url`, and `onboarding_runs.domain` too *only* while
+  `namecheap.purchase_domain` is still outstanding - once a domain is purchased
+  that column is the domain we actually own DNS for and must not be overwritten.
+
 ## Deploy setup (managed by the user, not in code)
 
 - Render: one always-on web service, branch `main`, defined by `render.yaml`.

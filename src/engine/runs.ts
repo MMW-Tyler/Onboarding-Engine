@@ -5,6 +5,7 @@ import { defaultMaxAttempts, defaultProfileFor } from './retry.js';
 import { clearEchoBudget } from '../steps/echo.js';
 import type { RunMode } from '../config.js';
 import { getRunMode } from '../config.js';
+import { websiteHostFrom } from '../lib/domain.js';
 import type { RunStep, StepStatus } from '../types.js';
 
 /** Step statuses that satisfy a dependency (a downstream step may proceed). */
@@ -295,6 +296,63 @@ export async function resumeRun(runId: string): Promise<string[]> {
   const keys = (data ?? []).map((r) => r.step_key as string);
   for (const k of keys) await retryStep(runId, k);
   return keys;
+}
+
+export interface SetWebsiteResult {
+  /** the host the answer resolved to */
+  website_url: string;
+  /** whether onboarding_runs.domain was updated too */
+  domain_updated: boolean;
+  /** the run's domain after the fix (the purchased domain, if there is one) */
+  domain: string | null;
+}
+
+/**
+ * Correct the website on an existing run (dashboard "fix website").
+ *
+ * The Sales Intake form's website question gets filled in wrong often enough
+ * to strand a run - an email address, a social page, a typo - and everything
+ * domain-shaped downstream reads from it. This sets the profile's website_url
+ * to a real host so a following `resume` recomputes with good data, without
+ * re-running the steps that already succeeded.
+ *
+ * onboarding_runs.domain is only touched while the domain purchase is still
+ * outstanding. Once namecheap.purchase_domain has succeeded, that column holds
+ * the domain we actually bought and own DNS for (often a <base>px.com
+ * fallback), and overwriting it with the client's existing site would point the
+ * DNS/Mailgun/warmup steps at a domain that isn't in the Namecheap account.
+ */
+export async function setRunWebsite(runId: string, website: string): Promise<SetWebsiteResult> {
+  const { host, reason } = websiteHostFrom(website);
+  if (!host) {
+    throw new Error(
+      `setRunWebsite: "${website}" is not a usable practice domain (${reason}) - enter the client's real website, e.g. example.com`,
+    );
+  }
+
+  const { data: run, error } = await db()
+    .from('onboarding_runs')
+    .select('client_profile_json, domain')
+    .eq('id', runId)
+    .maybeSingle();
+  if (error) throw new Error(`setRunWebsite: ${error.message}`);
+  if (!run) throw new Error(`setRunWebsite: no such run ${runId}`);
+
+  const purchase = await loadStep(runId, 'namecheap.purchase_domain');
+  const purchased = purchase != null && SATISFIED.has(purchase.status);
+
+  const profile = { ...((run.client_profile_json ?? {}) as Record<string, unknown>), website_url: host };
+  const patch: Record<string, unknown> = { client_profile_json: profile, updated_at: new Date().toISOString() };
+  if (!purchased) patch.domain = host;
+
+  const { error: updErr } = await db().from('onboarding_runs').update(patch).eq('id', runId);
+  if (updErr) throw new Error(`setRunWebsite: ${updErr.message}`);
+
+  return {
+    website_url: host,
+    domain_updated: !purchased,
+    domain: (purchased ? (run.domain as string | null) : host) ?? null,
+  };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toHost, looksLikeDomain, firstDomainToken, extractWebsiteDomain } from './domain.js';
+import { toHost, looksLikeDomain, firstDomainToken, extractWebsiteDomain, websiteHostFrom } from './domain.js';
 
 describe('toHost - tolerant of messy form input', () => {
   it('strips scheme, www, path, query, casing, and whitespace', () => {
@@ -39,7 +39,43 @@ describe('firstDomainToken - pulls a domain out of a messy answer', () => {
   });
 });
 
+describe('websiteHostFrom - an email in the website field', () => {
+  it('passes a normal answer straight through', () => {
+    expect(websiteHostFrom('https://www.bodysolutionsmn.com/')).toEqual({ host: 'bodysolutionsmn.com', reason: null });
+    expect(websiteHostFrom('bodysolutionsmn.com')).toEqual({ host: 'bodysolutionsmn.com', reason: null });
+  });
+  it('recovers the practice domain from a work email address', () => {
+    expect(websiteHostFrom('info@bodysolutionsmn.com')).toEqual({ host: 'bodysolutionsmn.com', reason: 'email_domain' });
+    expect(websiteHostFrom('mailto:Dr.Jane@BodySolutionsMN.com')).toEqual({ host: 'bodysolutionsmn.com', reason: 'email_domain' });
+  });
+  it('refuses a personal mailbox instead of inventing a domain from it', () => {
+    expect(websiteHostFrom('bodysolutionsmn@gmail.com')).toEqual({ host: null, reason: 'free_email' });
+    expect(websiteHostFrom('drjane@yahoo.com')).toEqual({ host: null, reason: 'free_email' });
+    expect(websiteHostFrom('gmail.com')).toEqual({ host: null, reason: 'free_email' });
+  });
+  it('prefers a real site typed alongside an email', () => {
+    expect(websiteHostFrom('bodysolutionsmn.com (email: drjane@gmail.com)')).toEqual({
+      host: 'bodysolutionsmn.com',
+      reason: 'email_stripped',
+    });
+  });
+  it('reports answers with nothing usable in them', () => {
+    expect(websiteHostFrom('coming soon')).toEqual({ host: null, reason: 'not_a_domain' });
+    expect(websiteHostFrom('')).toEqual({ host: null, reason: 'not_a_domain' });
+    expect(websiteHostFrom(null)).toEqual({ host: null, reason: 'not_a_domain' });
+  });
+});
+
 describe('extractWebsiteDomain - webhook run-matching', () => {
+  it('still matches a run when the website answer is a work email', () => {
+    const body = { 'What is your website URL?': 'frontdesk@bodysolutionsmn.com' };
+    expect(extractWebsiteDomain(body)).toBe('bodysolutionsmn.com');
+  });
+  it('does not match on a personal email address', () => {
+    const body = { 'What is your website URL?': 'bodysolutionsmn@gmail.com' };
+    expect(extractWebsiteDomain(body)).toBeNull();
+  });
+
   it('matches the website question, not a social-profile "URL" question', () => {
     const body = {
       'What is your website URL?': 'https://www.smiledental.com',

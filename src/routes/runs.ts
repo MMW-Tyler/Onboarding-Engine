@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../supabase.js';
-import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, resendRollup } from '../engine/runs.js';
+import { createRun, retryStep, retryAllFlagged, rerunRun, resumeRun, resendRollup, setRunWebsite } from '../engine/runs.js';
 import { buildWave1RollupText } from '../steps/integrations/slack.js';
 import { buildWarmupSetup } from '../steps/integrations/warmup.js';
 import { redact } from '../redact.js';
@@ -100,6 +100,22 @@ runsRouter.post('/runs/:id/rerun', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'mode must be dry|live' });
   try {
     const result = await rerunRun(req.params.id, parsed.data.mode ?? 'live');
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** POST /runs/:id/website {website} - correct the client's website on a run whose
+ *  intake answer was wrong (an email address in the website field, a typo, a
+ *  social page). Sets profile.website_url, and run.domain too while the domain
+ *  purchase is still outstanding. Follow with /resume to work the stuck steps. */
+const websiteSchema = z.object({ website: z.string().min(1) });
+runsRouter.post('/runs/:id/website', async (req, res) => {
+  const parsed = websiteSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'body must be {website: "example.com"}' });
+  try {
+    const result = await setRunWebsite(req.params.id, parsed.data.website);
     return res.json({ ok: true, ...result });
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });

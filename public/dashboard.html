@@ -314,6 +314,7 @@ async function loadDetail() {
       '<h2 class="detail-head" style="border:none;color:var(--ink);margin:0;">' + (run.client_name || '(no name)') + '</h2>' +
       '<button class="tiny" onclick="retryFlagged()">retry all flagged</button>' +
       '<button class="tiny" onclick="resumeRun()" title="Retry only the flagged + blocked steps (leaves completed ones alone — won\'t duplicate created assets)">resume</button>' +
+      '<button class="tiny" onclick="fixWebsite()" title="Correct the client\'s website when the intake form had it wrong (e.g. an email address typed into the Website URL field), then resume">fix website</button>' +
       '<button class="tiny" onclick="postRollup()" title="Re-post this run\'s roll-up to its Slack channel">send roll-up</button>' +
       '<button class="tiny" onclick="copyRollup()" title="Show a copy-paste-ready roll-up message to drop into Slack manually">copy roll-up</button>' +
       '<button class="tiny" onclick="warmupSetup()" title="Get the SMTP values to paste into the assigned Warmup Inbox for this client\'s domain">warmup setup</button>' +
@@ -484,6 +485,22 @@ async function resumeRun() {
     const r = await api('/runs/' + selectedRun + '/resume', { method: 'POST' });
     toast('resuming ' + ((r.resumed || []).length) + ' steps');
     setTimeout(loadDetail, 800);
+  } catch (e) { toast('error: ' + e.message); }
+}
+
+/** Correct a wrong website answer (an email address in the Website URL field is
+ *  the usual one) and offer to resume the stuck steps right away. */
+async function fixWebsite() {
+  const current = (lastRun && lastRun.client_profile_json && lastRun.client_profile_json.website_url) || '';
+  const website = prompt("Client's real website (e.g. bodysolutionsmn.com):", current);
+  if (!website) return;
+  try {
+    const r = await api('/runs/' + selectedRun + '/website', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ website }),
+    });
+    toast('website set to ' + r.website_url + (r.domain_updated ? ' (run domain updated)' : ' (domain already purchased, left alone)'));
+    loadDetail();
+    if (confirm('Website set to ' + r.website_url + '.\n\nResume the flagged / blocked / failed steps now?')) resumeRun();
   } catch (e) { toast('error: ' + e.message); }
 }
 

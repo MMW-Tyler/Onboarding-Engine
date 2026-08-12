@@ -3,6 +3,7 @@ import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
 import { namecheapUrl, unwrapRelayXml } from '../../lib/namecheap.js';
+import { websiteHostFrom } from '../../lib/domain.js';
 import { profileOf, simulated } from './util.js';
 
 /**
@@ -64,19 +65,36 @@ function websiteFromIntake(ctx: StepContext): string {
   return '';
 }
 
-/** Brandable base label from a website/domain string, e.g. www.nezhat.org -> 'nezhat'. */
+/**
+ * Labels that are never a client's brand, only the platform their website or
+ * email happens to live on. Buying <label>px.com off one of these would spend
+ * real money on a domain that has nothing to do with the practice, so they
+ * always fall through to the practice-name slug instead. Belt and braces:
+ * websiteHostFrom already rejects consumer mailbox hosts, but run.domain and
+ * the raw intake payload can carry a value that predates that check.
+ */
+const NON_BRAND_LABELS = new Set([
+  'gmail', 'googlemail', 'yahoo', 'ymail', 'hotmail', 'outlook', 'live', 'msn',
+  'aol', 'aim', 'icloud', 'me', 'mac', 'comcast', 'sbcglobal', 'att', 'verizon',
+  'bellsouth', 'cox', 'charter', 'earthlink', 'roadrunner', 'rr', 'protonmail',
+  'proton', 'gmx', 'mail', 'yandex', 'zoho',
+  'facebook', 'instagram', 'linkedin', 'twitter', 'youtube', 'yelp', 'google',
+  'wix', 'wixsite', 'squarespace', 'wordpress', 'godaddysites', 'weebly',
+]);
+
+/**
+ * Brandable base label from a website/domain string, e.g. www.nezhat.org -> 'nezhat'.
+ * Resolves the source through websiteHostFrom so an email address in the
+ * website field (a real, repeated data-entry mistake) can't become the base:
+ * a work address gives the practice's own host, a personal one gives nothing
+ * and we fall back to slugging the practice name.
+ */
 function baseLabel(ctx: StepContext): string {
-  const source = siteSource(ctx);
-  if (source) {
-    try {
-      const url = new URL(source.startsWith('http') ? source : `https://${source}`);
-      const host = url.hostname.replace(/^www\./, '');
-      const sld = host.split('.')[0] ?? '';
-      const clean = sld.toLowerCase().replace(/[^a-z0-9-]/g, '');
-      if (clean) return clean;
-    } catch {
-      // fall through to slug approach
-    }
+  const { host } = websiteHostFrom(siteSource(ctx));
+  if (host) {
+    const sld = host.replace(/^www\./, '').split('.')[0] ?? '';
+    const clean = sld.toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (clean && !NON_BRAND_LABELS.has(clean)) return clean;
   }
   const name = (profileOf(ctx.run).office_name ?? ctx.run.client_name ?? 'client').toLowerCase();
   return name.replace(/[^a-z0-9]+/g, '').slice(0, 50) || 'client';
@@ -329,7 +347,11 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   // ORIGINAL site (not this purchased domain). Non-destructive: only sets
   // website_url if it wasn't already populated.
   const profile = (ctx.run.client_profile_json ?? {}) as Record<string, unknown>;
-  const profilePatch = profile.website_url ? profile : { ...profile, website_url: siteSource(ctx) };
+  // Backfill the ORIGINAL site, resolved to a host - never the raw answer, which
+  // may be the email address / junk that normalize_intake refused to store.
+  const originalHost = websiteHostFrom(siteSource(ctx)).host;
+  const profilePatch =
+    profile.website_url || !originalHost ? profile : { ...profile, website_url: originalHost };
   await db()
     .from('onboarding_runs')
     .update({ domain, client_profile_json: profilePatch, updated_at: new Date().toISOString() })

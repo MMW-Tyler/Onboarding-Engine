@@ -2,7 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { loadPromptSystem } from '../../lib/anthropic.js';
 import { normalizeProfile } from '../../profile/canonical.js';
-import { toHost, looksLikeDomain } from '../../lib/domain.js';
+import { toHost, looksLikeDomain, websiteHostFrom } from '../../lib/domain.js';
 import { validateAddress } from '../../lib/places.js';
 
 /**
@@ -48,6 +48,41 @@ async function runNormalize(
       `profile.normalize_${schema}: 0/${rawCount} fields mapped - raw labels look malformed ` +
         `(e.g. "${sampleLabels[0]}"), not question text. Check the webhook's field mapping.`,
     );
+  }
+
+  // The website question is the single most damaging field to get wrong: every
+  // domain step (purchase, DNS, Mailgun, warmup), the crawl, HubSpot's company
+  // domain and the GHL/AdviceLocal payloads all read website_url. Reps and
+  // clients fill it in with an email address often enough that it has already
+  // broken a live run, so resolve it to a real host here - the one place that
+  // writes the profile - instead of letting each consumer guess. An answer that
+  // yields nothing usable (a personal gmail/yahoo address, "coming soon") is
+  // dropped from the profile rather than stored: a bogus website_url silently
+  // pushes junk into HubSpot/GHL, while a missing one just makes the domain
+  // steps ask for a real value. Either way the original answer is preserved in
+  // raw_intake_json and surfaced in `unmapped` for review.
+  if (profile.website_url) {
+    const answer = profile.website_url;
+    const { host, reason } = websiteHostFrom(answer);
+    if (host && host !== toHost(answer)) {
+      profile.website_url = host;
+      unmapped.push({ raw_label: 'website_url', raw_value: answer, reason: `website_${reason}:${host}` });
+      await ctx.logEvent({
+        level: 'warn',
+        endpoint: `profile.normalize_${schema}`,
+        parsed_error: `website answer "${answer}" is not a plain domain (${reason}) - using "${host}" instead. Confirm this is the client's real site.`,
+      });
+    } else if (!host) {
+      delete profile.website_url;
+      unmapped.push({ raw_label: 'website_url', raw_value: answer, reason: `website_${reason}` });
+      await ctx.logEvent({
+        level: 'warn',
+        endpoint: `profile.normalize_${schema}`,
+        parsed_error:
+          `website answer "${answer}" is not a usable practice domain (${reason}) - left blank. ` +
+          `Set the real website on the run (dashboard: "fix website") before the domain steps run.`,
+      });
+    }
   }
 
   // Merge into the run profile. Sensitive values live under _restricted and are
