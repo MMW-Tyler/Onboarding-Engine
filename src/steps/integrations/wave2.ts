@@ -6,6 +6,7 @@ import { draft, loadPromptSystem } from '../../lib/anthropic.js';
 import { searchPlace } from '../../lib/places.js';
 import { profileOf, siblingOutput, simulated, chunkText } from './util.js';
 import { toHost, looksLikeDomain } from '../../lib/domain.js';
+import { fetchSite, fetchPage } from '../../lib/site.js';
 import { slackPost as callSlackApi } from './slack.js';
 
 /**
@@ -49,19 +50,25 @@ async function gbpOptimizePlan(ctx: StepContext): Promise<Record<string, unknown
 // --- Prompt 4: crawl -> brand + SEO report -----------------------------------
 interface CrawledPage { url: string; title: string; meta: string; h1: string; word_count: number }
 
-async function crawlSite(ctx: StepContext, host: string): Promise<{ pages: CrawledPage[]; nav: string[] }> {
-  const base = `https://${host}`;
-  const fetchPage = async (url: string): Promise<{ html: string } | null> => {
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 12000);
-      const res = await fetch(url, { redirect: 'follow', signal: controller.signal, headers: { 'user-agent': 'OnboardEngine/1.0 crawler' } }).finally(() => clearTimeout(t));
-      if (!res.ok) return null;
-      return { html: (await res.text()).slice(0, 400_000) };
-    } catch { return null; }
-  };
-  const home = await fetchPage(base);
-  if (!home) return { pages: [], nav: [] };
+async function crawlSite(ctx: StepContext, host: string): Promise<{ pages: CrawledPage[]; nav: string[]; base: string; reason: string | null }> {
+  // fetchSite ladders https/http and apex/www with browser headers, so a site
+  // that only answers on www (or only over http, or that 403s a scripted
+  // user-agent) still gets crawled instead of coming back with zero pages.
+  const home = await fetchSite(host, { timeoutMs: 12_000, maxBytes: 400_000 });
+  if (!home.ok) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'crawl.site_report',
+      parsed_error:
+        `could not read ${host} (${home.reason}); tried: ` +
+        home.attempts.map((a) => `${a.url} -> ${a.status ?? a.error}`).join(', '),
+    });
+    return { pages: [], nav: [], base: home.url, reason: home.reason };
+  }
+  // Walk links relative to the URL that actually answered - following the
+  // homepage's redirect (apex -> www, http -> https) keeps internal links
+  // on-origin so the base-prefix filter below doesn't reject all of them.
+  const base = new URL(home.url).origin;
 
   // Discover a handful of internal links from the homepage. Only real <a href>
   // navigation links - matching any href= at all also catches WordPress's (and
@@ -94,13 +101,13 @@ async function crawlSite(ctx: StepContext, host: string): Promise<{ pages: Crawl
     word_count: (html.replace(/<[^>]+>/g, ' ').match(/\S+/g) ?? []).length,
   });
 
-  const pages: CrawledPage[] = [parse(base, home.html)];
+  const pages: CrawledPage[] = [parse(home.url, home.html)];
   for (const url of targets.slice(1)) {
-    const pg = await fetchPage(url);
+    const pg = await fetchPage(url, { timeoutMs: 12_000, maxBytes: 400_000 });
     if (pg) pages.push(parse(url, pg.html));
   }
   const navMatches = [...home.html.matchAll(/<nav[\s\S]*?<\/nav>/gi)].map((x) => x[0].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300));
-  return { pages, nav: navMatches.slice(0, 2) };
+  return { pages, nav: navMatches.slice(0, 2), base, reason: null };
 }
 
 async function crawlSiteReport(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -118,7 +125,7 @@ async function crawlSiteReport(ctx: StepContext): Promise<Record<string, unknown
   }
   const crawl = await crawlSite(ctx, host);
   if (crawl.pages.length === 0) {
-    return { skipped: true, reason: `site ${host} not reachable` };
+    return { skipped: true, reason: `site ${host} not reachable (${crawl.reason ?? 'unknown'})` };
   }
   const system = loadPromptSystem('04-crawl-site-report.md');
   const user =

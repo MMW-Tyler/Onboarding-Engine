@@ -107,6 +107,29 @@
   `namecheap.purchase_domain` is still outstanding - once a domain is purchased
   that column is the domain we actually own DNS for and must not be overwritten.
 
+## Why platform detection kept coming back "unknown" (2026-08-12)
+
+- **The main bug: `crawl.detect_platform` read `ctx.run.domain` first.** It and
+  `namecheap.purchase_domain` both depend only on `profile.normalize_intake`, so
+  they are enqueued together and `claim_next_job` orders by `run_after` (all
+  equal) - the order is effectively arbitrary. Whenever the purchase won the
+  race it overwrote `run.domain` with the just-registered `<base>px.com`, and the
+  crawler fingerprinted a domain with no site on it. **Always read
+  `profile.website_url` first** for anything that looks at the client's existing
+  site; `run.domain` is the domain WE own, not theirs. `crawl.site_report` had
+  this right already - `detect_platform` now matches it.
+- Both crawlers now fetch through `fetchSite()` in `src/lib/site.ts`, which
+  ladders `https://apex -> https://www -> http://apex -> http://www`, sends
+  browser-shaped headers (WAFs 403 an obviously-scripted user-agent), and checks
+  `res.ok`. The old code did one https-apex request with a bot UA and never
+  checked the status, so a challenge page or a 404 got scored like real HTML and
+  surfaced as "unknown".
+- A failed read now reports *which* failure (`dns_error`, `tls_error`,
+  `http_403`, `timeout`, ...) plus every URL tried, in the run's technical log.
+  When the page reads fine but nothing matches, the step falls back to the
+  `<meta name="generator">` value and logs a warn - "unknown" now really means
+  unknown, not "we never got the page".
+
 ## Deploy setup (managed by the user, not in code)
 
 - Render: one always-on web service, branch `main`, defined by `render.yaml`.

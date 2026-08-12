@@ -1,7 +1,8 @@
 import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
-import { profileOf } from './util.js';
-import { toHost } from '../../lib/domain.js';
+import { profileOf, siblingOutput } from './util.js';
+import { toHost, looksLikeDomain } from '../../lib/domain.js';
+import { fetchSite } from '../../lib/site.js';
 
 /**
  * crawl.detect_platform (read-safe): fetch the client's homepage and fingerprint
@@ -102,13 +103,31 @@ const SIGNATURES: Signature[] = [
   },
 ];
 
-function siteUrl(ctx: StepContext): string | null {
-  const host = (ctx.run.domain as string | undefined)?.trim() || (() => {
-    const w = profileOf(ctx.run).website_url;
-    return w ? toHost(w) : '';
-  })();
+/**
+ * The host to fingerprint: the client's EXISTING site.
+ *
+ * Must prefer profile.website_url over ctx.run.domain. Both this step and
+ * namecheap.purchase_domain hang off profile.normalize_intake, so they are
+ * enqueued together and their order is not guaranteed - and the purchase step
+ * OVERWRITES run.domain with the domain it just bought (<base>px.com), which by
+ * definition has no website on it yet. Reading run.domain first meant that
+ * whenever the purchase won the race, this step fetched a freshly-registered
+ * domain, got nothing, and reported "unknown". crawl.site_report already gets
+ * this right (see wave2.ts); this is the same rule.
+ */
+async function siteHost(ctx: StepContext): Promise<string | null> {
+  const websiteUrl = profileOf(ctx.run).website_url;
+  const fromProfile = websiteUrl && looksLikeDomain(websiteUrl) ? toHost(websiteUrl) : '';
+  if (fromProfile) return fromProfile;
+
+  const host = (ctx.run.domain as string | undefined)?.trim() ?? '';
   if (!host || !host.includes('.')) return null;
-  return `https://${host}`;
+  // No website on the profile and run.domain is the domain we just bought: that
+  // is a brand-new registration with nothing served on it, so there is nothing
+  // to fingerprint. Say so instead of reporting the client's site as unreachable.
+  const purchase = await siblingOutput(ctx.run.id, 'namecheap.purchase_domain');
+  if (toHost(String(purchase?.output?.domain ?? '')) === toHost(host)) return null;
+  return host;
 }
 
 /**
@@ -334,32 +353,39 @@ function detectWpBuilders(html: string): { builder: string; hits: number }[] {
 }
 
 async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>> {
-  const url = siteUrl(ctx);
-  if (!url) {
-    await ctx.logEvent({ level: 'warn', endpoint: 'crawl.detect_platform', parsed_error: 'no usable website on the run' });
+  const host = await siteHost(ctx);
+  if (!host) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'crawl.detect_platform',
+      parsed_error: 'no existing client website on the run - nothing to fingerprint',
+    });
     return { platform: 'unknown', reachable: false, reason: 'no_website' };
   }
 
-  let html = '';
-  let finalUrl = url;
-  const headers: Record<string, string> = {};
   const started = Date.now();
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { 'user-agent': 'Mozilla/5.0 (compatible; OnboardEngine/1.0; +platform-detect)' },
-    }).finally(() => clearTimeout(timer));
-    finalUrl = res.url || url;
-    res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-    html = (await res.text()).slice(0, 300_000); // cap body
-    await ctx.logEvent({ level: 'info', endpoint: `GET ${url}`, response_status: res.status, duration_ms: Date.now() - started });
-  } catch (err) {
-    await ctx.logEvent({ level: 'warn', endpoint: `GET ${url}`, parsed_error: `unreachable: ${err instanceof Error ? err.message : String(err)}`, duration_ms: Date.now() - started });
-    return { platform: 'unknown', reachable: false, url, reason: 'unreachable' };
+  const site = await fetchSite(host, { timeoutMs: 15_000, maxBytes: 300_000 });
+  const tried = site.attempts.map((a) => `${a.url} -> ${a.status ?? a.error}`).join(', ');
+  if (!site.ok) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: `GET ${site.url}`,
+      response_status: site.status ?? undefined,
+      parsed_error: `could not read ${host} (${site.reason}); tried: ${tried}`,
+      duration_ms: Date.now() - started,
+    });
+    return { platform: 'unknown', reachable: false, url: site.url, reason: site.reason, attempts: site.attempts };
   }
+  await ctx.logEvent({
+    level: 'info',
+    endpoint: `GET ${site.url}`,
+    response_status: site.status ?? undefined,
+    response_body: { tried },
+    duration_ms: Date.now() - started,
+  });
+  const html = site.html;
+  const finalUrl = site.url;
+  const headers = site.headers;
 
   // Score each platform by how many of its signatures match.
   const scores = SIGNATURES.map((sig) => {
@@ -370,14 +396,32 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     return { platform: sig.platform, hits: evidence.length, evidence };
   }).filter((s) => s.hits > 0).sort((a, b) => b.hits - a.hits);
 
-  const best = scores[0];
-  const platform = best?.platform ?? 'unknown';
-  const confidence = !best ? 'none' : best.hits >= 2 ? 'high' : 'low';
+  // Last resort before giving up: most builders announce themselves in the
+  // generator meta tag even when none of the signatures above fit, so a site on
+  // something we've never seen still comes back named instead of "unknown".
+  const generator = html.match(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)["']/i)?.[1]?.trim() ?? null;
 
-  // Cross-check against what the intake form claimed.
+  const best = scores[0];
+  const platform = best?.platform ?? (generator ? `${generator} (from generator tag)` : 'unknown');
+  const confidence = best ? (best.hits >= 2 ? 'high' : 'low') : generator ? 'low' : 'none';
+  if (!best) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'crawl.detect_platform',
+      parsed_error:
+        `read ${finalUrl} (${html.length} bytes) but no platform signature matched` +
+        (generator ? ` - generator tag says "${generator}"` : ' and there is no generator tag') +
+        '. Custom build, or a fingerprint we do not have yet.',
+    });
+  }
+
+  // Cross-check against what the intake form claimed. Both sides are free text
+  // (the generator tag especially - "Site.pro (v2)" would be an invalid regex),
+  // so escape before building the comparison patterns.
   const claimed = profileOf(ctx.run).website_build_type ?? '';
+  const firstWord = (s: string) => (s.split(' ')[0] ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const matchesIntake = claimed
-    ? new RegExp(platform.split(' ')[0]!, 'i').test(claimed) || new RegExp(claimed.split(' ')[0]!, 'i').test(platform)
+    ? new RegExp(firstWord(platform) || '$^', 'i').test(claimed) || new RegExp(firstWord(claimed) || '$^', 'i').test(platform)
     : null;
   if (claimed && matchesIntake === false && platform !== 'unknown') {
     await ctx.logEvent({ level: 'warn', endpoint: 'crawl.detect_platform', parsed_error: `intake said "${claimed}" but site looks like ${platform}` });
@@ -431,6 +475,8 @@ async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>
     confidence,
     reachable: true,
     final_url: finalUrl,
+    generator,
+    fetch_attempts: site.attempts,
     wp_builder: wpBuilders[0]?.builder ?? null,
     wp_theme: wpTheme,
     mmw_take_in_house: mmwReady,
