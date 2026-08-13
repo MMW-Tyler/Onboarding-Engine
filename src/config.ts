@@ -63,6 +63,13 @@ export const config = {
     masterTrackerListId: () => required('CLICKUP_MASTER_TRACKER_LIST_ID'),
     folderTemplateId: () => required('CLICKUP_FOLDER_TEMPLATE_ID'),
     templateSpaceId: () => required('CLICKUP_TEMPLATE_SPACE_ID'),
+    // "New Client Onboarding" folder (space "Onboarding | Offboarding"): holds
+    // one onboarding checklist list per client. Defaults to the live folder so
+    // no extra Render config is needed.
+    onboardingFolderId: () => optional('CLICKUP_ONBOARDING_FOLDER_ID', '90176700365'),
+    // The list duplicated for each Practice Pro client ("Practice Pro -
+    // Onboarding Sample"), also inside the onboarding folder.
+    practiceProListId: () => optional('CLICKUP_PRACTICE_PRO_LIST_ID', '901711324840'),
   },
   drive: {
     saJson: () => required('GDRIVE_SA_JSON'),

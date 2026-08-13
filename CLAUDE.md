@@ -22,6 +22,62 @@
   (<base>px.com then <base>patients.com). To stop all purchases, set
   NAMECHEAP_LIVE=false or RUN_MODE=dry.
 
+## ClickUp objects per client (2026-08-13)
+
+Three separate ClickUp things get created per Wave 1 run - don't confuse them:
+
+1. **`clickup.clone_template`** — the client's ongoing work FOLDER, cloned from
+   the folder template into the template space (SEO / Account Management / Ads
+   Coordination / ... lists + the Master Record doc). Stored on
+   `onboarding_runs.clickup_folder_id`.
+2. **`clickup.onboarding_list`** — **Practice Pro clients only.** Duplicates the
+   list "Practice Pro - Onboarding Sample" (`901711324840`) into the folder
+   "New Client Onboarding" (`90176700365`, space "Onboarding | Offboarding") and
+   names it for the client — the same place `Kale MD`, `Sereno Sante`, etc. live.
+   ClickUp's public API has **no duplicate-list endpoint** and the sample is not
+   saved as a list template, so the step creates an empty list in the folder and
+   re-creates every source task in it (name, description, status, priority,
+   tags, dates, `Assigned Role`, and subtask parents). It paces writes at
+   ~700 ms to stay under ClickUp's 100 req/min limit, so a full copy of the ~73
+   sample tasks takes about a minute. It is resume-safe: a same-named list in
+   the folder is reused and tasks already there (matched by name) are skipped,
+   so a retry after a partial copy finishes the job instead of duplicating.
+   Overridable via `CLICKUP_ONBOARDING_FOLDER_ID` / `CLICKUP_PRACTICE_PRO_LIST_ID`
+   (both optional, defaulted to the live ids, so no Render config is needed).
+   Smart Start / Whiz Works have no sample list yet — the step reports `skipped`
+   for them. Add one and give it a config id when they do.
+3. **`clickup.master_tracker`** — the row in the Master Account Tracker list
+   (`CLICKUP_MASTER_TRACKER_LIST_ID`). The task name is **just the client name**
+   (not "Onboarding - <client>"), and its custom fields are filled from the
+   agreement type + deliverables.
+
+### Where the tracker's deliverable fields come from
+
+`src/lib/packages.ts` holds the package matrix: for each program (Smart Start /
+Practice Pro / Whiz Works) the "Contract Type" option, the standard monthly
+price, and the tracker's deliverable dropdowns (SEO Services, Blogs, GBP
+Optimization/Posting, Citations, Press Releases, E-Mail Marketing (+ Platform),
+Dr. Social Whiz Access, Events & Webinars, Lead Magnet, Lead Gen Ads Management,
+Reputation Management, MMW Hosting, GHL Subaccount, Top Doctor Magazine
+Feature, DFY Social Media, Video Services). **Source of truth is the 2026
+program agreements in Drive** (`Smart_Start_Agreement (2026)`,
+`Practice_Pro_Agreement (2026)`, `Whiz_Works_Agreement (2026)`, Exhibit A) —
+update the table when a program's scope changes. Cadences the dropdowns can't
+express (2 blogs/mo, 1 event a year, graphic-design projects) go into the
+tracker's Notes field, along with the intake's "special additions".
+
+The step never writes a hardcoded field/option UUID: it reads the tracker
+list's live field definitions and matches by **name**, so a renamed field or
+option shows up as a warn (`fields_unresolved` in the step output) instead of
+silently writing garbage. Run-derived fields: Lifecycle=Onboarding, City/State
+from NAP, Monthly Committment (intake invoice amount, else the program's list
+price), Contract Signed (intake timestamp), Renewal Date (start date + contract
+length), Website CMS (from `crawl.detect_platform`), MMW Built Website (from the
+intake's website build type). Account Executive, Happiness Level, Maintenance
+Level and the meeting dates are deliberately left blank — a human sets those.
+The `Address` (location) field is also left alone: ClickUp needs lat/lng for it
+and `lib/places.ts` doesn't return coordinates.
+
 ## Production URL + Zapier wiring (IMPORTANT - stop asking the user for this)
 
 - **Live service URL: `https://onboarding-engine-h299.onrender.com`**
@@ -169,6 +225,10 @@ DataForSEO: `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`.
 Other: `GOOGLE_PLACES_API_KEY`, `ADVICELOCAL_API_KEY`, `STEP_DRY_OVERRIDE`.
 
 NOT set, relying on code defaults (do not assume these exist):
+- `CLICKUP_ONBOARDING_FOLDER_ID` -> defaults `90176700365` ("New Client
+  Onboarding" folder).
+- `CLICKUP_PRACTICE_PRO_LIST_ID` -> defaults `901711324840` ("Practice Pro -
+  Onboarding Sample" list).
 - `NAMECHEAP_REGISTRANT_COUNTRY` -> defaults `US`.
 - `GHL_BRANDED_DNS_HOST` / `_TYPE` / `_TARGET` -> default `go` / `CNAME` /
   `brand.ludicrous.cloud` (the MMW standard GHL branded-domain CNAME).

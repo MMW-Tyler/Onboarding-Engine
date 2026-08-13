@@ -299,6 +299,7 @@ const W1_ASSET_STEPS = [
   'slack.create_channel',
   'hubspot.upsert',
   'clickup.clone_template',
+  'clickup.onboarding_list',
   'clickup.master_tracker',
   'drive.create_folders',
   'ghl.provision_subaccount',
@@ -411,6 +412,10 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
 
   const folderId = r.clickup_folder_id as string | undefined;
   if (folderId && team) assetLines.push(`${rollupEmoji(stat('clickup.clone_template'))}  *ClickUp folder*  —  ${val(`https://app.clickup.com/${team}/v/f/${folderId}`, 'Open folder')}`);
+  const onboardingListId = out('clickup.onboarding_list').list_id as string | undefined;
+  if (onboardingListId && team && stat('clickup.onboarding_list') !== 'skipped') {
+    assetLines.push(`${rollupEmoji(stat('clickup.onboarding_list'))}  *ClickUp onboarding checklist*  —  ${val(`https://app.clickup.com/${team}/v/li/${onboardingListId}`, 'Open list')}`);
+  }
   const taskId = out('clickup.master_tracker').task_id as string | undefined;
   if (taskId) assetLines.push(`${rollupEmoji(stat('clickup.master_tracker'))}  *ClickUp tracker*  —  ${val(`https://app.clickup.com/t/${taskId}`, 'Open task')}`);
 
@@ -544,7 +549,7 @@ export const slackSteps: Step[] = [
     key: 'slack.wave1_rollup', wave: 1, safetyClass: 'reversible-write',
     dependsOn: ['slack.create_channel'],
     softDependsOn: [
-      'hubspot.upsert', 'clickup.clone_template', 'clickup.master_tracker',
+      'hubspot.upsert', 'clickup.clone_template', 'clickup.onboarding_list', 'clickup.master_tracker',
       'drive.create_folders', 'ghl.provision_subaccount', 'crawl.detect_platform',
       'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'mailgun.verify', 'warmup.enroll',
     ],

@@ -21,6 +21,9 @@ export const recipes: Record<string, string[]> = {
     'slack.create_channel',
     'hubspot.upsert',
     'clickup.clone_template',
+    // Practice Pro clients also get the onboarding checklist list duplicated
+    // into the New Client Onboarding folder (skipped for other packages).
+    'clickup.onboarding_list',
     'clickup.master_tracker',
     'drive.create_folders',
     'namecheap.purchase_domain',
