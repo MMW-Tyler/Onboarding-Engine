@@ -92,20 +92,23 @@ curl localhost:10000/status               # mode + step/job tallies
   live + dry paths: Slack, HubSpot, ClickUp, Drive, Namecheap (sandbox), DNS,
   Mailgun, Warmup, GHL.
 - **M3 — recipes + partial runs: implemented.** `full_onboarding`,
-  `device_client_setup`, `ghl_only`, `domain_warmup_only`, `wave2_research`
-  recipes; hand-selected steps supported.
+  `clientform_delivery`, `device_client_setup`, `ghl_only`,
+  `domain_warmup_only`, `wave2_research` recipes; hand-selected steps supported.
 - **M4 — forms + Slack profile: implemented.** Zapier webhooks create runs;
   Prompts 1–2 normalize both forms (deterministic table + AI fallback);
   sensitive fields (NPI/DEA/license/credentials) routed to a restricted bucket
   and redacted on all API output; Slack channel + profile post + pinned
   client-profile.json. Run all in dry-run to validate, then flip `RUN_MODE=live`.
-- **M5 — Wave 2 AI + research: implemented.** Prompts 3–6 (GBP optimization plan,
-  crawl→brand/SEO report, SEO roadmap, press topics + content calendar) as DRAFTs;
-  Google Places + multi-page crawl + DataForSEO inputs; Advice Local listings;
-  GHL A2P registration (stub pending snapshot field map); wave2.rollup posts a
-  review summary to Slack. Wave 2 is attached to the Wave 1 run by the clientform
-  webhook (reuses channel + phase0 gate + GHL location). Namecheap live still
-  behind the two-key unlock; the domain/email stack can be pinned dry in live via
+- **M5 — Wave 2 AI + research: built, then retired from the automated path
+  (2026-08-19).** Prompts 3–6 (GBP optimization plan, crawl→brand/SEO report, SEO
+  roadmap, press topics + content calendar), DataForSEO inputs, Advice Local
+  listings, GHL A2P and wave2.rollup all still exist as steps and as the
+  hand-pickable `wave2_research` recipe, but **nothing triggers them
+  automatically**: the team decided the engine shouldn't reach into the tools
+  they already run these tasks in. What the Client MMW onboarding form triggers
+  now is `clientform_delivery` — normalize the answers, post the form to the
+  client's Slack channel, stop. Namecheap live is still behind the two-key
+  unlock; the domain/email stack can be pinned dry in live via
   STEP_DRY_OVERRIDE.
 
 The dashboard is styled to the MMW aesthetic (Fraunces / Space Mono / Newsreader,

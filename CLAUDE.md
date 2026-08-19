@@ -109,6 +109,32 @@ and `lib/places.ts` doesn't return coordinates.
   webhook's JSON body rather than individual fields. Test and inspect one real
   payload before calling it done.
 
+## Phase two scope: the form goes to Slack, and that's it (2026-08-19, Tyler)
+
+- The Client MMW onboarding form was originally the trigger for a Wave 2 research
+  chain. **That's retired.** Tyler: the engine shouldn't intermingle with the
+  tools the team already uses - no Advice Local listing submissions, no keyword
+  research. **The process stops once the onboarding form has been delivered to
+  the client's Slack channel.**
+- `/webhook/clientform` now attaches exactly two steps to the matching Wave 1
+  run: `profile.normalize_clientform` -> `slack.post_clientform_profile`
+  (recipe `clientform_delivery`). The old bundle (gbp.optimize_plan,
+  crawl.site_report, dataforseo.pull, seo.roadmap, research.press_topics,
+  research.content_calendar, advicelocal.listings, ghl.a2p_registration,
+  wave2.rollup) is still registered and still selectable by hand in the
+  dashboard as the `wave2_research` recipe - nothing fires it on its own.
+- `slack.post_clientform_profile` is built so the form CANNOT get stuck:
+  - normalize is a **soft** dependency, so the broken-zap case (0/40 fields
+    mapped - see the Zapier note above) still posts every answer verbatim with a
+    banner saying the labels didn't come through as question text.
+  - a run with no `slack_channel_id` (submission didn't match a Wave 1 run)
+    posts to `SLACK_FALLBACK_CHANNEL_ID` with a "couldn't match this to a client
+    channel" banner instead of parking the data in the DB unseen.
+  - it only pins the message in the client's own channel, never in the fallback.
+- Open question left for Tyler: `ghl.a2p_registration` went out with the research
+  chain because it ran after the form. If 10DLC registration should still happen
+  automatically, it belongs in Wave 1, not here.
+
 ## Phase two decisions (2026-07-16, from Tyler)
 
 - **No backfill** of historical client-form responses; new submissions only.

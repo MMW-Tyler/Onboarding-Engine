@@ -2,7 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { profileOf, simId, simulated, slugifyChannel, chunkText } from './util.js';
+import { profileOf, siblingOutput, simId, simulated, slugifyChannel, chunkText } from './util.js';
 import { SCHEMAS } from '../../profile/canonical.js';
 
 /**
@@ -291,6 +291,179 @@ async function postProfileDry(ctx: StepContext): Promise<Record<string, unknown>
   return simulated({ ts: simId('ts'), profile_bytes: json.length });
 }
 
+// --- post_clientform_profile: deliver the Client MMW onboarding form ---------
+// (2026-08-19) This post is the END of the pipeline. The onboarding form used to
+// be the trigger for a Wave 2 research chain (keyword pulls, AI drafts, Advice
+// Local listings); the team decided the engine should stop once the form has
+// landed in the client's Slack channel, so this step now stands alone.
+//
+// Two things it deliberately refuses to fail on, because "the form never showed
+// up in Slack" is the only outcome that actually costs the team anything:
+//   - Normalization is a SOFT dependency. A zap that forwards Google's raw
+//     question-id-keyed payload maps zero fields and flags
+//     profile.normalize_clientform; the answers still get posted verbatim so a
+//     human can read them (and can see the zap needs fixing).
+//   - A run with no Slack channel (the submission didn't match a Wave 1 run)
+//     falls back to SLACK_FALLBACK_CHANNEL_ID with a "couldn't match" banner
+//     instead of dropping the submission on the floor.
+
+/** Google Forms / Zapier envelope fields - metadata, never client answers. */
+const FORM_META_KEYS = new Set([
+  'id', 'create_time', 'createtime', 'response_id', 'responseid',
+  'last_submitted_time', 'lastsubmittedtime', 'form_id', 'formid',
+  'zap_meta_human_now', 'zap_meta_utc_iso', 'zap_search_was_found_status',
+]);
+function isFormMetaKey(label: string): boolean {
+  return FORM_META_KEYS.has(label.trim().toLowerCase().replace(/\s+/g, '_'));
+}
+
+/** Render one raw form answer as a bullet, or null if there's nothing to show. */
+function rawAnswerLine(label: string, value: unknown): string | null {
+  if (isFormMetaKey(label)) return null;
+  const text = Array.isArray(value)
+    ? value.map((v) => String(v)).join(', ')
+    : value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const capped = trimmed.length > 600 ? `${trimmed.slice(0, 600)}…` : trimmed;
+  return `• *${label.trim()}:* ${capped}`;
+}
+
+export interface ClientFormPost {
+  blocks: unknown[];
+  fallback: string;
+  /** canonical fields the normalizer recognized (0 => the zap is misconfigured) */
+  mappedCount: number;
+  /** raw answers posted verbatim underneath (unmapped, or everything on failure) */
+  rawCount: number;
+}
+
+/**
+ * Build the onboarding-form post. Pure (no I/O) so it can be unit-tested.
+ *
+ * `normalizeOutput` is profile.normalize_clientform's output_json when that step
+ * succeeded, or null when it failed / hasn't run - in which case the whole raw
+ * submission is posted as-is rather than nothing.
+ */
+export function buildClientFormPost(
+  run: Record<string, any>,
+  normalizeOutput: Record<string, any> | null,
+  opts: { unmatched?: boolean } = {},
+): ClientFormPost {
+  const raw = (run.raw_clientform_json ?? {}) as Record<string, unknown>;
+  const profile = profileOf(run as any);
+  const client =
+    (run.client_name as string | undefined) ?? profile.office_name ?? profile.legal_business_name ?? 'client';
+
+  const mappedKeys: string[] = Array.isArray(normalizeOutput?.mapped_keys) ? normalizeOutput!.mapped_keys : [];
+  const mapped: Record<string, string> = {};
+  for (const k of mappedKeys) {
+    if (INTERNAL_PROFILE_KEYS.has(k) || profile[k] == null) continue;
+    mapped[k] = profile[k];
+  }
+
+  // Answers the normalizer couldn't place (or every answer, when it never ran):
+  // posted verbatim so nothing the client typed goes missing from the channel.
+  const unmappedEntries: { raw_label?: string; raw_value?: unknown }[] = Array.isArray(normalizeOutput?.unmapped)
+    ? normalizeOutput!.unmapped
+    : [];
+  const rawLines = normalizeOutput
+    ? unmappedEntries.map((u) => rawAnswerLine(String(u.raw_label ?? ''), u.raw_value)).filter((l): l is string => !!l)
+    : Object.entries(raw).map(([k, v]) => rawAnswerLine(k, v)).filter((l): l is string => !!l);
+
+  const mappedCount = Object.keys(mapped).length;
+  const notes: string[] = [];
+  if (opts.unmatched) {
+    notes.push(
+      `⚠️ *Couldn't match this submission to a client channel* — posting here instead. ` +
+        `Check the website answer against the run's domain, then move/repost as needed.`,
+    );
+  }
+  if (mappedCount === 0) {
+    notes.push(
+      `⚠️ *The field labels didn't come through as question text*, so nothing could be filed into the ` +
+        `client profile — the answers below are exactly as the webhook received them. Fix the zap ` +
+        `(trigger on the linked responses Sheet, send the whole row) so future submissions map cleanly.`,
+    );
+  }
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: `📝 Onboarding form — ${client}`, emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: `The Client MMW onboarding form just came in. Here's everything they submitted.` } },
+  ];
+  for (const note of notes) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: note } });
+  blocks.push({ type: 'divider' });
+
+  if (mappedCount > 0) blocks.push(...groupedProfileBlocks(mapped));
+  if (rawLines.length > 0) {
+    if (mappedCount > 0) blocks.push({ type: 'divider' });
+    blocks.push(...sectionBlocksFor(mappedCount > 0 ? '🗂️ *Other answers*' : '📄 *Answers as submitted*', rawLines));
+  }
+  if (mappedCount === 0 && rawLines.length === 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_The submission arrived empty — nothing to show._' } });
+  }
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `OnboardEngine · run \`${run.id}\`` }] });
+
+  return {
+    blocks,
+    fallback: `Onboarding form — ${client}`,
+    mappedCount,
+    rawCount: rawLines.length,
+  };
+}
+
+/** The client's own channel, or the fallback channel when the run has none. */
+function clientFormChannel(ctx: StepContext): { channel: string; unmatched: boolean } {
+  const own = ctx.run.slack_channel_id as string | undefined;
+  if (own) return { channel: own, unmatched: false };
+  const fallback = config.slack.fallbackChannelId();
+  if (!fallback) {
+    throw new Error(
+      'slack: this run has no channel and SLACK_FALLBACK_CHANNEL_ID is not set, so the onboarding form has ' +
+        'nowhere to go. Set the fallback channel (or link this run to a Wave 1 run) and retry.',
+    );
+  }
+  return { channel: fallback, unmatched: true };
+}
+
+async function postClientFormReal(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { channel, unmatched } = clientFormChannel(ctx);
+  const normalize = await siblingOutput(ctx.run.id, 'profile.normalize_clientform');
+  const post = buildClientFormPost(ctx.run as unknown as Record<string, any>, normalize?.output ?? null, { unmatched });
+
+  const res = await slackPost<any>(ctx, 'chat.postMessage', {
+    channel,
+    text: post.fallback,
+    blocks: post.blocks,
+    mrkdwn: true,
+  });
+  // Pin it in the client's own channel (it's the record of what they told us).
+  // Never in the fallback channel - that one is shared and would fill up.
+  if (!unmatched) {
+    try {
+      await slackPost(ctx, 'pins.add', { channel, timestamp: res.ts });
+    } catch (err) {
+      await ctx.logEvent({ level: 'warn', endpoint: 'slack.pins.add', parsed_error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (post.mappedCount === 0) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'slack.post_clientform_profile',
+      parsed_error: `posted the form with 0 normalized fields (${post.rawCount} raw answers) - check the clientform zap's field mapping`,
+    });
+  }
+  return { posted: true, ts: res.ts, channel, unmatched, mapped_fields: post.mappedCount, raw_answers: post.rawCount };
+}
+
+async function postClientFormDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  await authProbe(ctx);
+  const { channel, unmatched } = clientFormChannel(ctx);
+  const normalize = await siblingOutput(ctx.run.id, 'profile.normalize_clientform');
+  const post = buildClientFormPost(ctx.run as unknown as Record<string, any>, normalize?.output ?? null, { unmatched });
+  return simulated({ ts: simId('ts'), channel, unmatched, mapped_fields: post.mappedCount, raw_answers: post.rawCount });
+}
+
 // --- wave1.rollup: one post listing the created assets + their links ---------
 // Replaces the redundant sale-summary / profile reposts (the Zap already posts
 // the form fields). This is the team's "everything's set up" catch: each asset
@@ -473,7 +646,7 @@ export async function buildWave1RollupText(runId: string): Promise<string> {
   const c = buildWave1Content(r, byKey, false);
   return [
     `✅ Wave 1 complete — ${c.client}`,
-    `Account setup is done. Lines marked "↳ Action" need a quick human step. Wave 2 (AI research) kicks off when the Client MMW onboarding form arrives.`,
+    `Account setup is done. Lines marked "↳ Action" need a quick human step. When the client's MMW onboarding form comes in, it gets posted to this channel - that's the last automated step.`,
     ``,
     `📦 Assets created`,
     ...c.assetLines,
@@ -496,7 +669,7 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   const c = buildWave1Content(r, byKey, true);
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${c.client}`, emoji: true } },
-    { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. Lines marked *↳ Action* need a quick human step. *Wave 2* (AI research) kicks off when the Client MMW onboarding form arrives.` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. Lines marked *↳ Action* need a quick human step. When the client's *MMW onboarding form* comes in, it gets posted to this channel — that's the last automated step.` } },
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${c.assetLines.join('\n')}` } },
     { type: 'divider' },
@@ -537,9 +710,19 @@ export const slackSteps: Step[] = [
     isApplicable: () => true, runReal: postProfileReal, runDry: postProfileDry,
   },
   {
+    // The onboarding form's delivery to Slack - the last step of the whole
+    // pipeline. Both deps are SOFT on purpose:
+    //   - normalize orders the two steps (so the post can use the tidy canonical
+    //     grouping when normalization worked) without ever letting a
+    //     normalization failure swallow the form;
+    //   - create_channel matters when the form arrives while Wave 1 is still
+    //     running - waiting for it means the post lands in the client's channel
+    //     rather than the fallback. Absent from the run (a standalone clientform
+    //     run has no Wave 1 steps) it's simply ignored.
     key: 'slack.post_clientform_profile', wave: 2, safetyClass: 'reversible-write',
-    dependsOn: ['profile.normalize_clientform'], maxAttempts: 3,
-    isApplicable: () => true, runReal: postProfileReal, runDry: postProfileDry,
+    dependsOn: [], softDependsOn: ['profile.normalize_clientform', 'slack.create_channel'], maxAttempts: 3,
+    isApplicable: (run) => !!run.raw_clientform_json,
+    runReal: postClientFormReal, runDry: postClientFormDry,
   },
   {
     // Posts last, after every Wave 1 asset step has finished. These are SOFT

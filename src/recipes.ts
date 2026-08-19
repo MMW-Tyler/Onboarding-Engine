@@ -2,10 +2,9 @@
  * Recipes: named step bundles (spec section 05). Kept as data so bundles can
  * change without code edits. createRun() validates every key is registered.
  *
- * M4 ships Wave 1 (forms -> Slack/HubSpot/ClickUp/Drive/domain+email stack/GHL)
- * plus the client-form normalization + Slack profile post. The Wave 2 AI research
- * (Prompts 3-6), A2P, Advice Local, and rollup land in M5 and will be added to
- * full_onboarding / wave2_research then.
+ * Wave 1 (forms -> Slack/HubSpot/ClickUp/Drive/domain+email stack/GHL) is the
+ * automated pipeline. The Client MMW onboarding form no longer kicks off the
+ * original Wave 2 research chain - see clientform_delivery below.
  */
 export const recipes: Record<string, string[]> = {
   // M1 lifecycle test bundle
@@ -73,9 +72,22 @@ export const recipes: Record<string, string[]> = {
     'slack.post_intake_profile',
   ],
 
-  // Wave 2 (M5): client-form normalization + AI research drafts + listings/A2P + rollup.
-  // Normally attached to the Wave 1 run by the clientform webhook (so it reuses
-  // the Slack channel + phase0 gate + GHL location); listed here for manual runs.
+  // What the Client MMW onboarding form triggers now (2026-08-19, Tyler): the
+  // form is normalized and posted to the client's Slack channel, and the engine
+  // STOPS there. The old plan - keyword research, AI drafts, Advice Local
+  // listings, A2P - was dropped: it duplicated work the team already does in
+  // other tools, and nobody wanted the engine reaching into them. Attached to
+  // the matching Wave 1 run by /webhook/clientform (so it reuses that run's
+  // Slack channel); listed here for manual/standalone runs.
+  clientform_delivery: [
+    'profile.normalize_clientform',
+    'slack.post_clientform_profile',
+  ],
+
+  // The original Wave 2 research chain. NOT triggered by anything automatically
+  // any more - kept as a hand-pickable bundle in the dashboard for the day
+  // someone wants a one-off research pass on a client. Nothing runs these unless
+  // a human selects them.
   wave2_research: [
     'profile.normalize_clientform',
     'slack.post_clientform_profile',

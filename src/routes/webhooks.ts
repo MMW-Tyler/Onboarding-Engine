@@ -8,7 +8,8 @@ import { extractWebsiteDomain, toHost, looksLikeDomain } from '../lib/domain.js'
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
  * submissions here; the engine writes the run + checklist and works it.
  *  - /webhook/intake     -> full_onboarding (Wave 1)
- *  - /webhook/clientform -> attach Wave 2 to the matching run (gated on phase 0)
+ *  - /webhook/clientform -> normalize the onboarding form + post it to the
+ *    matching run's Slack channel (the pipeline ends there)
  */
 export const webhooksRouter = Router();
 
@@ -127,6 +128,14 @@ async function findRunIdByDomain(domain: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * What a Client MMW onboarding form submission runs: normalize the answers, then
+ * post them to the client's Slack channel. That's the whole of it - the engine
+ * stops once the form has been delivered (2026-08-19 decision; the old research
+ * chain lives on only as the hand-pickable `wave2_research` recipe).
+ */
+const CLIENTFORM_STEPS = ['profile.normalize_clientform', 'slack.post_clientform_profile'];
+
 webhooksRouter.post('/webhook/clientform', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -138,28 +147,18 @@ webhooksRouter.post('/webhook/clientform', async (req, res) => {
 
     if (runId) {
       await db().from('onboarding_runs').update({ raw_clientform_json: body, updated_at: new Date().toISOString() }).eq('id', runId);
-      const added = await addStepsToRun(runId, [
-        'profile.normalize_clientform',
-        'slack.post_clientform_profile',
-        'gbp.optimize_plan',
-        'crawl.site_report',
-        'dataforseo.pull',
-        'seo.roadmap',
-        'research.press_topics',
-        'research.content_calendar',
-        'advicelocal.listings',
-        'ghl.a2p_registration',
-        'wave2.rollup',
-      ]);
+      const added = await addStepsToRun(runId, CLIENTFORM_STEPS);
       console.log(`[webhook] clientform -> attached to run ${runId} (${added.length} steps)`);
       return res.status(202).json({ accepted: true, runId, attached: added });
     }
 
-    // No match: normalize and store the data on a standalone run (no Slack post -
-    // there is no channel). A human can link it later.
+    // No match: still normalize + post, on a standalone run. The post lands in
+    // SLACK_FALLBACK_CHANNEL_ID with a "couldn't match this to a client channel"
+    // banner, so a submission is never silently parked in the database where
+    // nobody sees it. A human can link the run afterwards.
     const result = await createRun({
-      recipe: 'wave2_research',
-      stepKeys: ['profile.normalize_clientform'],
+      recipe: 'clientform_delivery',
+      stepKeys: CLIENTFORM_STEPS,
       clientformInput: body,
     });
     console.log(`[webhook] clientform -> no match, standalone run ${result.runId}`);
