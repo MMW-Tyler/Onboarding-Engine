@@ -136,6 +136,18 @@ export interface WhizOnboardRequest {
   ae_email?: string;
 }
 
+/**
+ * `temporary` for the hand-pickable test bundle, `standard` for everything else.
+ *
+ * `whizhq_only` exists to exercise the hand-off against the real API without a
+ * real sale behind it, and `clients/onboard` is not idempotent - so without this
+ * every rehearsal leaves a permanent client in WhizHQ's list for someone to find
+ * and wonder about later.
+ */
+export function clientTypeFor(recipe: string | null | undefined): 'standard' | 'temporary' {
+  return recipe === 'whizhq_only' ? 'temporary' : 'standard';
+}
+
 export interface WhizOnboardResponse {
   ok?: boolean;
   clientId?: string;

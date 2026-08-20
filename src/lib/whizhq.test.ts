@@ -3,6 +3,7 @@ import { HttpError } from './http.js';
 import {
   bootstrapFinished,
   classifyWhizError,
+  clientTypeFor,
   crawlFailed,
   isDeadCrawl,
   pollProgressLine,
@@ -180,5 +181,16 @@ describe('pollProgressLine', () => {
       32,
     );
     expect(line).toBe('waiting on WhizHQ (crawl running, 42 pages, client info pending, brand voice pending) - poll 7/32');
+  });
+});
+
+describe('clientTypeFor', () => {
+  // clients/onboard is not idempotent, so rehearsing the hand-off against the
+  // real API must not leave permanent clients behind.
+  it('marks the test bundle\'s clients temporary and everything else standard', () => {
+    expect(clientTypeFor('whizhq_only')).toBe('temporary');
+    expect(clientTypeFor('full_onboarding')).toBe('standard');
+    expect(clientTypeFor(null)).toBe('standard');
+    expect(clientTypeFor(undefined)).toBe('standard');
   });
 });

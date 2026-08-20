@@ -7,6 +7,7 @@ import { slackPost } from './slack.js';
 import {
   bootstrapFinished,
   classifyWhizError,
+  clientTypeFor,
   crawlFailed,
   isDeadCrawl,
   pollProgressLine,
@@ -111,7 +112,7 @@ async function onboardBody(ctx: StepContext): Promise<WhizOnboardRequest> {
     );
   }
 
-  const body: WhizOnboardRequest = { name, client_type: 'standard' };
+  const body: WhizOnboardRequest = { name, client_type: clientTypeFor(ctx.run.recipe as string | null) };
 
   // The client's existing website, not the domain we bought them. WhizHQ builds
   // its default crawl target from this, so a wrong value crawls the wrong site.

@@ -186,6 +186,10 @@ with the URL sees that client's portal.
 - **Crawl-derived values are unverified by design** (source `crawl` / `analyzer`)
   and the client's own onboarding-form answers overwrite them. The thread reply
   says so. Never present them to a client as confirmed practice details.
+- **The `whizhq_only` recipe creates `temporary` clients**, every other recipe
+  creates `standard` ones (`clientTypeFor`). It is the rehearsal bundle and
+  `clients/onboard` is not idempotent, so without that every test run would leave
+  a permanent client behind.
 - `WHIZHQ_AE_EMAIL` is a single agency default, because the Sales Intake form has
   no "who sold this" question. It must be an ACTIVE WhizHQ user or the create
   call 400s; unset, the client is created unassigned (and the roadmap's AE

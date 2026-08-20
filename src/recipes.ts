@@ -65,6 +65,9 @@ export const recipes: Record<string, string[]> = {
   // Controlled live-test bundle for the WhizHQ hand-off on its own: normalize
   // the intake, create the client + dashboard link, crawl their site, and report
   // the outcome. No Slack channel, so the crawl report logs instead of posting.
+  // Clients created by THIS recipe are sent as client_type `temporary`
+  // (clientTypeFor in lib/whizhq.ts), so rehearsing against the real API does
+  // not leave permanent clients behind - clients/onboard is not idempotent.
   whizhq_only: [
     'profile.normalize_intake',
     'whizhq.create_client',
