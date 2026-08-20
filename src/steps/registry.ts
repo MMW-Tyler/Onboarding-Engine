@@ -16,6 +16,7 @@ import { dataforseoSteps } from './integrations/dataforseo.js';
 import { adviceLocalSteps } from './integrations/advicelocal.js';
 import { ghlA2pSteps } from './integrations/ghl_a2p.js';
 import { phase0Steps } from './integrations/phase0.js';
+import { whizhqSteps } from './integrations/whizhq.js';
 
 /**
  * The step catalog (spec section 08). A step_key -> Step map. New integration
@@ -62,5 +63,6 @@ const ALL: Step[][] = [
   adviceLocalSteps,
   ghlA2pSteps,
   phase0Steps,
+  whizhqSteps,
 ];
 for (const group of ALL) for (const s of group) register(s);

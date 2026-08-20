@@ -158,6 +158,7 @@ const INTERNAL_PROFILE_KEYS = new Set([
   'detected_platform', 'detected_wp_builder', 'detected_wp_theme',
   'detected_themes', 'detected_plugins', 'detected_integrations', 'detected_fonts',
   'warmup_inbox', 'wave2_canvas_id',
+  'whizhq_client_id', 'whizhq_portal_url', 'whizhq_crawl_id', 'whizhq_crawl_restarted_at_poll',
 ]);
 
 // --- post profile + pinned JSON ---
@@ -470,6 +471,7 @@ async function postClientFormDry(ctx: StepContext): Promise<Record<string, unkno
 // with a link, the detected website platform, and a flag on anything to review.
 const W1_ASSET_STEPS = [
   'slack.create_channel',
+  'whizhq.create_client',
   'hubspot.upsert',
   'clickup.clone_template',
   'clickup.onboarding_list',
@@ -549,8 +551,10 @@ async function loadRollupData(runId: string): Promise<{ r: Record<string, any>; 
   return { r: (run ?? { id: runId }) as Record<string, any>, byKey };
 }
 
-interface Wave1Content {
+export interface Wave1Content {
   client: string;
+  /** The WhizHQ client dashboard line, or '' when there is no link to show. */
+  dashboardLine: string;
   assetLines: string[];
   platformLine: string;
   stackLines: string[];
@@ -563,7 +567,7 @@ interface Wave1Content {
  * copy-paste message (typed Slack text auto-links raw URLs but does NOT render
  * <url|label>). *bold*, `code`, and emoji render the same either way.
  */
-function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLinks: boolean): Wave1Content {
+export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLinks: boolean): Wave1Content {
   const stat = (k: string) => (byKey.get(k)?.status as string | undefined);
   const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
   const err = (k: string) => (byKey.get(k)?.last_error as string | undefined);
@@ -572,6 +576,26 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
   const team = config.clickup.teamId();
   const profile = (r.client_profile_json ?? {}) as Record<string, any>;
   const client = r.client_name ?? 'client';
+
+  // The client dashboard (the WhizHQ client portal): one durable token URL that
+  // aggregates every client-facing surface. Its own line near the top, because
+  // it is the link the team actually opens. Always the copy STORED when the
+  // client was created - never rebuilt from a token, so it survives a re-run.
+  // It is client-facing: these channels are internal so posting it is fine, but
+  // anyone with the URL sees that client's portal.
+  const portalUrl = typeof profile.whizhq_portal_url === 'string' ? profile.whizhq_portal_url : '';
+  const whizStatus = stat('whizhq.create_client');
+  let dashboardLine = '';
+  if (portalUrl) {
+    dashboardLine = `${rollupEmoji(whizStatus)}  *Client dashboard:*  ${val(portalUrl, `${client} dashboard`)}`;
+  } else if (whizStatus === 'simulated') {
+    dashboardLine = `${rollupEmoji(whizStatus)}  *Client dashboard:*  no client created in this dry run`;
+  } else if (whizStatus && whizStatus !== 'skipped') {
+    // Skipped means WhizHQ isn't configured yet - stay silent then, rather than
+    // putting a line about a system nobody has turned on into every roll-up.
+    const why = err('whizhq.create_client');
+    dashboardLine = `${rollupEmoji(whizStatus)}  *Client dashboard:*  not created in WhizHQ${why ? ` — ${why}` : ''}`;
+  }
 
   const assetLines: string[] = [];
   assetLines.push(`${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  ${asLinks ? 'this channel' : 'created'}`);
@@ -634,7 +658,7 @@ function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLi
   }
   const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
 
-  return { client, assetLines, platformLine, stackLines, allStackSimulated };
+  return { client, dashboardLine, assetLines, platformLine, stackLines, allStackSimulated };
 }
 
 /**
@@ -647,6 +671,7 @@ export async function buildWave1RollupText(runId: string): Promise<string> {
   return [
     `✅ Wave 1 complete — ${c.client}`,
     `Account setup is done. Lines marked "↳ Action" need a quick human step. When the client's MMW onboarding form comes in, it gets posted to this channel - that's the last automated step.`,
+    ...(c.dashboardLine ? [``, c.dashboardLine] : []),
     ``,
     `📦 Assets created`,
     ...c.assetLines,
@@ -670,6 +695,7 @@ async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${c.client}`, emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. Lines marked *↳ Action* need a quick human step. When the client's *MMW onboarding form* comes in, it gets posted to this channel — that's the last automated step.` } },
+    ...(c.dashboardLine ? [{ type: 'section', text: { type: 'mrkdwn', text: c.dashboardLine } }] : []),
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${c.assetLines.join('\n')}` } },
     { type: 'divider' },
@@ -734,6 +760,10 @@ export const slackSteps: Step[] = [
     softDependsOn: [
       'hubspot.upsert', 'clickup.clone_template', 'clickup.onboarding_list', 'clickup.master_tracker',
       'drive.create_folders', 'ghl.provision_subaccount', 'crawl.detect_platform',
+      // The client dashboard link comes from here. NOT whizhq.site_bootstrap or
+      // whizhq.crawl_report: crawl_report waits on this roll-up so it can reply
+      // in its thread, and soft-depending back on either would deadlock both.
+      'whizhq.create_client',
       'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'mailgun.verify', 'warmup.enroll',
     ],
     maxAttempts: 3, isApplicable: () => true, runReal: wave1RollupReal, runDry: wave1RollupDry,

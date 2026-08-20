@@ -26,6 +26,16 @@ describe('retry policy (spec section 09)', () => {
     expect(backoffMs('standard', 20)).toBe(120000); // capped at 2 min
   });
 
+  // The `poll` profile is how a step waits on someone else's async job: base ==
+  // cap, so the gap is FLAT rather than doubling, and the step is re-claimed on a
+  // steady cadence until it succeeds or runs out of attempts.
+  it('poll waits a flat 60s on every attempt', () => {
+    expect(backoffMs('poll', 1)).toBe(60_000);
+    expect(backoffMs('poll', 2)).toBe(60_000);
+    expect(backoffMs('poll', 31)).toBe(60_000);
+    expect(defaultMaxAttempts('poll')).toBe(32); // ~30 min of polling
+  });
+
   it('flaky backoff stays within the 5-min cap (with jitter)', () => {
     for (let attempt = 1; attempt <= 20; attempt++) {
       const ms = backoffMs('flaky', attempt);

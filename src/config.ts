@@ -154,6 +154,34 @@ export const config = {
   adviceLocal: {
     apiKey: () => required('ADVICELOCAL_API_KEY'),
   },
+  /**
+   * WhizHQ (the `mmw-platform` app) automation API. Every getter is `optional()`
+   * on purpose: neither var is set in Render yet, and a `required()` getter that
+   * is missing crashes the service on boot. `configured()` is what the WhizHQ
+   * steps gate on - unset config makes them report `skipped` instead of failing
+   * a run (the integration spec's "fail soft, never block onboarding" rule).
+   */
+  whizhq: {
+    baseUrl: () => optional('WHIZHQ_BASE_URL').trim().replace(/\/+$/, ''),
+    automationKey: () => optional('WHIZHQ_AUTOMATION_KEY').trim(),
+    configured: () =>
+      !!optional('WHIZHQ_BASE_URL').trim() && !!optional('WHIZHQ_AUTOMATION_KEY').trim(),
+    /**
+     * The onboarding launchpad program to start for each new client. Passing one
+     * also switches the client dashboard's onboarding section on.
+     */
+    program: () => optional('WHIZHQ_PROGRAM', 'new_client_30day'),
+    /**
+     * AE to assign the client to. The Sales Intake form has no "who sold this"
+     * question, so there is nothing per-client to read - this is a single agency
+     * default. It must be an ACTIVE WhizHQ user's email or the create call is
+     * rejected with a 400, so it stays unset (client created unassigned) until
+     * someone puts a real address in Render.
+     */
+    aeEmail: () => optional('WHIZHQ_AE_EMAIL').trim(),
+    /** Page cap for the automation crawl. WhizHQ's own automation default. */
+    crawlMaxPages: () => Number(optional('WHIZHQ_CRAWL_MAX_PAGES', '150')),
+  },
 };
 
 export function getRunMode(): RunMode {

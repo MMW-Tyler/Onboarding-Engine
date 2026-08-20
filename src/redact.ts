@@ -8,7 +8,7 @@
  */
 
 const SECRET_KEY_PATTERN =
-  /(authorization|api[_-]?key|token|secret|password|passwd|pwd|bearer|client[_-]?secret|access[_-]?token|service[_-]?key)/i;
+  /(authorization|api[_-]?key|automation[_-]?key|token|secret|password|passwd|pwd|bearer|client[_-]?secret|access[_-]?token|service[_-]?key)/i;
 
 /** Spec section 11: sensitive client fields, routed to restricted storage, never logged. */
 export const SENSITIVE_KEYS = new Set([

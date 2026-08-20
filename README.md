@@ -93,7 +93,8 @@ curl localhost:10000/status               # mode + step/job tallies
   Mailgun, Warmup, GHL.
 - **M3 — recipes + partial runs: implemented.** `full_onboarding`,
   `clientform_delivery`, `device_client_setup`, `ghl_only`,
-  `domain_warmup_only`, `wave2_research` recipes; hand-selected steps supported.
+  `domain_warmup_only`, `whizhq_only`, `wave2_research` recipes; hand-selected
+  steps supported.
 - **M4 — forms + Slack profile: implemented.** Zapier webhooks create runs;
   Prompts 1–2 normalize both forms (deterministic table + AI fallback);
   sensitive fields (NPI/DEA/license/credentials) routed to a restricted bucket
@@ -110,6 +111,19 @@ curl localhost:10000/status               # mode + step/job tallies
   client's Slack channel, stop. Namecheap live is still behind the two-key
   unlock; the domain/email stack can be pinned dry in live via
   STEP_DRY_OVERRIDE.
+
+- **WhizHQ hand-off (2026-08-20): implemented, inert until configured.** Wave 1
+  creates the client in WhizHQ (the `mmw-platform` app), puts their **client
+  dashboard** link in the Slack roll-up, and crawls their website so WhizHQ's
+  client info + brand voice fields are filled before the AE's kickoff call
+  (`whizhq.create_client` → `whizhq.site_bootstrap` → `whizhq.crawl_report`,
+  which replies in the roll-up's thread when the crawl lands). HTTP only, gated
+  on `WHIZHQ_BASE_URL` + `WHIZHQ_AUTOMATION_KEY`; with those unset every WhizHQ
+  step reports `skipped` and the roll-up is unchanged. Fails soft by design — it
+  is absent from `phase0.gate`'s dependencies, so WhizHQ being down or
+  un-deployed can never hold up Wave 1. See CLAUDE.md for the constraints
+  (non-idempotent client creation, the `poll` retry profile, dead-crawl
+  detection) before changing any of it.
 
 The dashboard is styled to the MMW aesthetic (Fraunces / Space Mono / Newsreader,
 cream-paper palette). Several M5 external calls (DataForSEO, Advice Local, GHL

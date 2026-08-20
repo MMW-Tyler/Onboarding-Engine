@@ -8,6 +8,7 @@ import type { RetryProfile, SafetyClass } from '../types.js';
  *   standard (Slack, HubSpot, ClickUp, Drive, GHL) : 3, exp, cap 2 min
  *   AI synthesis : 2, exp
  *   costly (Namecheap) : 1, none - a human investigates
+ *   poll : many attempts at a FIXED 60s gap - "wait for someone else's async job"
  */
 
 interface ProfileSpec {
@@ -22,6 +23,23 @@ const PROFILES: Record<RetryProfile, ProfileSpec> = {
   standard: { defaultMaxAttempts: 3, baseMs: 2000, capMs: 2 * 60_000, jitter: false },
   ai: { defaultMaxAttempts: 2, baseMs: 3000, capMs: 60_000, jitter: false },
   costly: { defaultMaxAttempts: 1, baseMs: 0, capMs: 0, jitter: false },
+  /**
+   * Polling, not retrying. base == cap makes backoffMs() return a FLAT 60s for
+   * every attempt instead of doubling, so a step that throws "not finished yet"
+   * is re-claimed once a minute until it succeeds or runs out of attempts.
+   *
+   * This is how a step waits on an external async job (WhizHQ's site crawl):
+   * the runner has no "sleep and re-check" primitive, and sleeping inside a step
+   * would stall the single-threaded checklist loop for the whole wait. Steps
+   * using it set their own maxAttempts to bound the total window, and their
+   * final attempt should report the timeout rather than silently giving up.
+   *
+   * 60s (rather than the 30s the WhizHQ integration spec suggests) because each
+   * pending poll writes a row to the visible error log: at 30s a 30-minute wait
+   * buries the real errors under 60 "still running" lines. A crawl takes minutes,
+   * so a minute of extra latency on the report costs nothing.
+   */
+  poll: { defaultMaxAttempts: 32, baseMs: 60_000, capMs: 60_000, jitter: false },
 };
 
 /** Pick a sensible default profile from the safety class when a step doesn't override. */

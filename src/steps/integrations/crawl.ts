@@ -104,7 +104,9 @@ const SIGNATURES: Signature[] = [
 ];
 
 /**
- * The host to fingerprint: the client's EXISTING site.
+ * The host to fingerprint: the client's EXISTING site. Exported because every
+ * step that looks at the client's own website needs this exact rule (the WhizHQ
+ * hand-off sends it as the client's domain and crawl target).
  *
  * Must prefer profile.website_url over ctx.run.domain. Both this step and
  * namecheap.purchase_domain hang off profile.normalize_intake, so they are
@@ -115,7 +117,7 @@ const SIGNATURES: Signature[] = [
  * domain, got nothing, and reported "unknown". crawl.site_report already gets
  * this right (see wave2.ts); this is the same rule.
  */
-async function siteHost(ctx: StepContext): Promise<string | null> {
+export async function clientSiteHost(ctx: StepContext): Promise<string | null> {
   const websiteUrl = profileOf(ctx.run).website_url;
   const fromProfile = websiteUrl && looksLikeDomain(websiteUrl) ? toHost(websiteUrl) : '';
   if (fromProfile) return fromProfile;
@@ -353,7 +355,7 @@ function detectWpBuilders(html: string): { builder: string; hits: number }[] {
 }
 
 async function detectPlatform(ctx: StepContext): Promise<Record<string, unknown>> {
-  const host = await siteHost(ctx);
+  const host = await clientSiteHost(ctx);
   if (!host) {
     await ctx.logEvent({
       level: 'warn',

@@ -109,6 +109,82 @@ and `lib/places.ts` doesn't return coordinates.
   webhook's JSON body rather than individual fields. Test and inspect one real
   payload before calling it done.
 
+## WhizHQ hand-off (2026-08-20)
+
+Wave 1 now hands the client to **WhizHQ** (the `mmw-platform` app: separate repo,
+separate Render service, separate Supabase). The two systems share nothing but
+HTTP. Three steps, all in `full_onboarding`:
+
+1. **`whizhq.create_client`** -> `POST /api/automation/clients/onboard`. Creates
+   the client, mints the durable **client dashboard** link, starts the onboarding
+   launchpad, maps the Slack channel and assigns the AE - one call for what an AE
+   would otherwise click through. Stores `whizhq_client_id` +
+   `whizhq_portal_url` on `client_profile_json`.
+2. **`whizhq.site_bootstrap`** -> `POST /api/automation/site-intelligence/bootstrap`.
+   Crawls the client's site and autofills their client info + brand voice, so the
+   profile is populated before the AE's kickoff call (WhizHQ's generators
+   deliberately go generic on an empty context). Fire and forget.
+3. **`whizhq.crawl_report`** -> polls `GET .../bootstrap?clientId=` and replies
+   **in the Wave 1 roll-up's thread** with what got filled in. The roll-up itself
+   never waits on a crawl.
+
+`slack.wave1_rollup` posts the dashboard link as its own line near the top. It is
+client-facing: the Slack channels are internal so posting it is fine, but anyone
+with the URL sees that client's portal.
+
+### Things that will bite you if you change this
+
+- **Config is `optional()`, and unset means `skipped`.** `WHIZHQ_BASE_URL` +
+  `WHIZHQ_AUTOMATION_KEY` are NOT in Render yet. `config.whizhq.configured()`
+  gates all three steps' `isApplicable`, so today they report `skipped` and the
+  roll-up looks exactly as it did before. Do not turn either into `required()` -
+  that crashes the service on boot.
+- **Only `clients/onboard` is live in WhizHQ.** The bootstrap + portal routes are
+  merged but await `AUTOMATION_KEY` on Render *and* migration
+  `045_si_bootstrap_runs.sql`. Until then they answer 404/503, which the steps
+  log and skip. Ask Tyler before assuming they work.
+- **`clients/onboard` is NOT idempotent** and WhizHQ client names are not unique,
+  so a second call makes a second client and splits one practice's work across
+  two records. Two guards: the client id is stored on `client_profile_json`
+  (which `rerunRun()` does NOT clear, unlike `output_json`) and checked before
+  every call, and `maxAttempts` is **1** - every failure mode is either pointless
+  to retry (401/400/404) or ambiguous about whether the write landed (5xx,
+  timeout). An ambiguous failure flags with "check WhizHQ for <client> first".
+- **Fail soft in one direction.** None of the three steps is in `phase0.gate`'s
+  dependency list, and the roll-up depends on `whizhq.create_client` only
+  *softly*, so WhizHQ being down can never hold up the rest of Wave 1. Keep it
+  that way.
+- **The crawl target is the client's OWN site.** Same rule as
+  `crawl.detect_platform` - it uses the exported `clientSiteHost()`, never
+  `run.domain` (which is the domain the engine just bought them, with nothing
+  served on it). `site_bootstrap` goes one better and sends the `final_url`
+  `detect_platform` already proved answers, so a www-only or http-only host is
+  crawled correctly instead of WhizHQ guessing `https://<domain>`.
+- **`whizhq.crawl_report` polls via the retry mechanism.** It throws "not
+  finished yet" and the new `poll` retry profile (`src/engine/retry.ts`, flat 60s
+  gap - base == cap) re-claims it, 32 times, ~30 min. `maxAttempts` there is the
+  *wait window*, not a failure budget: dropping it to the default 3 would flag
+  two minutes into a ten-minute crawl. It is 60s rather than the integration
+  spec's suggested 30s because each pending poll writes a row to the visible
+  error log. There is no other way to wait in this engine - sleeping inside a
+  step stalls the single-threaded checklist loop for the whole wait.
+- **A crawl saying `running` with `live: false` is dead**, not slow: WhizHQ runs
+  crawls in its web process with in-memory job state, so a Render deploy
+  mid-crawl orphans the row. `crawl_report` restarts it exactly once (tracked as
+  `whizhq_crawl_restarted_at_poll`, a poll number so the replacement crawl gets
+  the same "not live yet" grace the first one did), then gives up loudly.
+- **Crawl-derived values are unverified by design** (source `crawl` / `analyzer`)
+  and the client's own onboarding-form answers overwrite them. The thread reply
+  says so. Never present them to a client as confirmed practice details.
+- `WHIZHQ_AE_EMAIL` is a single agency default, because the Sales Intake form has
+  no "who sold this" question. It must be an ACTIVE WhizHQ user or the create
+  call 400s; unset, the client is created unassigned (and the roadmap's AE
+  kickoff button stays pending).
+- The `X-Automation-Key` header matched none of `redact.ts`'s secret patterns -
+  `automation[_-]?key` was added to `SECRET_KEY_PATTERN`. Do not remove it.
+- Never touch WhizHQ's Supabase directly and never log in as a user, even though
+  both would work. Every invariant it has lives in its application code.
+
 ## Phase two scope: the form goes to Slack, and that's it (2026-08-19, Tyler)
 
 - The Client MMW onboarding form was originally the trigger for a Wave 2 research
@@ -249,6 +325,11 @@ Mailgun: `MAILGUN_API_KEY`, `MAILGUN_REGION`.
 Warmup: `WARMUPINBOX_API_KEY`, `WARMUPINBOX_ROTATION_INBOXES`.
 DataForSEO: `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`.
 Other: `GOOGLE_PLACES_API_KEY`, `ADVICELOCAL_API_KEY`, `STEP_DRY_OVERRIDE`.
+
+NOT set at all - the WhizHQ hand-off is inert until they are (see "WhizHQ
+hand-off" above): `WHIZHQ_BASE_URL`, `WHIZHQ_AUTOMATION_KEY`. Optional extras
+with defaults: `WHIZHQ_PROGRAM` (-> `new_client_30day`), `WHIZHQ_AE_EMAIL`
+(-> unset, client created unassigned), `WHIZHQ_CRAWL_MAX_PAGES` (-> 150).
 
 NOT set, relying on code defaults (do not assume these exist):
 - `CLICKUP_ONBOARDING_FOLDER_ID` -> defaults `90176700365` ("New Client

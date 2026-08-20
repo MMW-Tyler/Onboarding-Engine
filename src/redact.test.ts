@@ -9,6 +9,15 @@ describe('redact', () => {
     expect(out.name).toBe('Acme');
   });
 
+  // WhizHQ's automation routes authenticate on an X-Automation-Key header, and
+  // "automation-key" matches none of the api_key / token / secret shapes.
+  it('masks the WhizHQ automation key header', () => {
+    const out = redact({ 'x-automation-key': 'whiz-secret', 'content-type': 'application/json' }) as Record<string, unknown>;
+    expect(out['x-automation-key']).toBe('[REDACTED]');
+    expect(out['content-type']).toBe('application/json');
+    expect((redact({ AUTOMATION_KEY: 'k' }) as Record<string, unknown>).AUTOMATION_KEY).toBe('[REDACTED]');
+  });
+
   it('masks sensitive client keys (spec section 11)', () => {
     for (const key of SENSITIVE_KEYS) {
       const out = redact({ [key]: 'value' }) as Record<string, unknown>;

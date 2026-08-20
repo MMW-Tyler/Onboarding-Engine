@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildClientFormPost } from './slack.js';
+import { buildClientFormPost, buildWave1Content } from './slack.js';
 
 /** Flatten every block's text so assertions can look for content, not layout. */
 function textOf(blocks: unknown[]): string {
@@ -75,5 +75,64 @@ describe('buildClientFormPost - the onboarding form as it lands in Slack', () =>
   it('says so plainly rather than posting an empty message', () => {
     const post = buildClientFormPost({ id: 'run-2', client_profile_json: {}, raw_clientform_json: {} }, null);
     expect(textOf(post.blocks)).toContain('submission arrived empty');
+  });
+});
+
+describe('buildWave1Content - the client dashboard line', () => {
+  const stepRows = (over: Record<string, any> = {}) =>
+    new Map<string, any>(Object.entries({ 'slack.create_channel': { status: 'succeeded' }, ...over }));
+
+  it('links the stored WhizHQ portal URL, as its own line', () => {
+    const c = buildWave1Content(
+      { id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: { whizhq_portal_url: 'https://hq.example.com/p/abc123' } },
+      stepRows({ 'whizhq.create_client': { status: 'succeeded' } }),
+      true,
+    );
+    expect(c.dashboardLine).toBe('✅  *Client dashboard:*  <https://hq.example.com/p/abc123|Coastal Aesthetics dashboard>');
+    // It is its own line, not smuggled into the asset list.
+    expect(c.assetLines.join('\n')).not.toContain('hq.example.com');
+  });
+
+  // Typed/pasted Slack text auto-links raw URLs but does NOT render <url|label>.
+  it('emits a raw URL for the copy-paste roll-up', () => {
+    const c = buildWave1Content(
+      { id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: { whizhq_portal_url: 'https://hq.example.com/p/abc123' } },
+      stepRows({ 'whizhq.create_client': { status: 'succeeded' } }),
+      false,
+    );
+    expect(c.dashboardLine).toContain('https://hq.example.com/p/abc123');
+    expect(c.dashboardLine).not.toContain('<https://');
+  });
+
+  it('does not claim a client exists on a dry run', () => {
+    const c = buildWave1Content(
+      { id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: {} },
+      stepRows({ 'whizhq.create_client': { status: 'simulated' } }),
+      true,
+    );
+    expect(c.dashboardLine).toBe('🔵  *Client dashboard:*  no client created in this dry run');
+  });
+
+  it('says the client was not created, with the reason, when WhizHQ failed', () => {
+    const c = buildWave1Content(
+      { id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: {} },
+      stepRows({ 'whizhq.create_client': { status: 'flagged', last_error: 'Invalid automation key' } }),
+      true,
+    );
+    expect(c.dashboardLine).toBe('⚠️  *Client dashboard:*  not created in WhizHQ — Invalid automation key');
+  });
+
+  // WhizHQ config unset: the steps report `skipped` and the roll-up should look
+  // exactly as it did before this integration existed, not carry a dead line.
+  it('shows nothing at all when the WhizHQ hand-off is skipped or absent', () => {
+    const skipped = buildWave1Content(
+      { id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: {} },
+      stepRows({ 'whizhq.create_client': { status: 'skipped' } }),
+      true,
+    );
+    expect(skipped.dashboardLine).toBe('');
+
+    const absent = buildWave1Content({ id: 'run-1', client_name: 'Coastal Aesthetics', client_profile_json: {} }, stepRows(), true);
+    expect(absent.dashboardLine).toBe('');
   });
 });

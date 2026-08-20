@@ -32,9 +32,19 @@ export const recipes: Record<string, string[]> = {
     'mailgun.verify',
     'warmup.enroll',
     'ghl.provision_subaccount',
+    // Hand the client off to WhizHQ (the mmw-platform app): create the client,
+    // mint their client dashboard link, start the onboarding launchpad, map the
+    // Slack channel, then crawl their site to fill client info + brand voice.
+    // All three fail soft - WhizHQ being down or un-deployed never holds up the
+    // rest of Wave 1 (they are absent from phase0.gate's dependencies on purpose).
+    'whizhq.create_client',
+    'whizhq.site_bootstrap',
     // One consolidated Slack post (assets + links + detected platform). Replaces
     // the old sale-summary / profile reposts - the Zap already posts the form.
     'slack.wave1_rollup',
+    // Polls the WhizHQ crawl and replies in the roll-up's thread with what it
+    // filled in, so the roll-up itself never waits on a crawl.
+    'whizhq.crawl_report',
     'phase0.gate',
   ],
 
@@ -51,6 +61,16 @@ export const recipes: Record<string, string[]> = {
 
   // Text-blast-only client
   ghl_only: ['ghl.provision_subaccount'],
+
+  // Controlled live-test bundle for the WhizHQ hand-off on its own: normalize
+  // the intake, create the client + dashboard link, crawl their site, and report
+  // the outcome. No Slack channel, so the crawl report logs instead of posting.
+  whizhq_only: [
+    'profile.normalize_intake',
+    'whizhq.create_client',
+    'whizhq.site_bootstrap',
+    'whizhq.crawl_report',
+  ],
 
   // Email stack for an existing client (also the isolated domain-purchase test
   // bundle: buy -> mailgun -> DNS -> warmup, nothing else).

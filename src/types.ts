@@ -4,7 +4,7 @@ import type { RunMode } from './config.js';
 export type SafetyClass = 'read-safe' | 'reversible-write' | 'costly';
 
 /** Retry backoff profile (spec section 09). See engine/retry.ts for the table. */
-export type RetryProfile = 'flaky' | 'standard' | 'ai' | 'costly';
+export type RetryProfile = 'flaky' | 'standard' | 'ai' | 'costly' | 'poll';
 
 /** Spec section 06: run_steps.status state machine. */
 export type StepStatus =
