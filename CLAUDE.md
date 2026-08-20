@@ -134,6 +134,16 @@ with the URL sees that client's portal.
 
 ### Things that will bite you if you change this
 
+- **`WHIZHQ_BASE_URL` must be the host that answers directly, no redirect.**
+  `fetch` follows redirects silently and a 301/302 on a POST is downgraded to a
+  GET with no body, so a www-vs-apex mismatch turns `clients/onboard` into a GET
+  that matches no route and comes back 404 - which reads like "not deployed".
+  `lib/http.ts` warns on any redirected write, and a 404 from `clients/onboard`
+  (a route that IS live) says to check the base URL rather than blaming the
+  deploy. It should equal WhizHQ's own `APP_BASE_URL`, because WhizHQ builds the
+  `portalUrl` it hands back from that - if the two disagree, our requests and the
+  dashboard links in Slack point at different hosts. A trailing slash is fine
+  (`config.whizhq.baseUrl()` strips it).
 - **Config is `optional()`, and unset means `skipped`.** `WHIZHQ_BASE_URL` +
   `WHIZHQ_AUTOMATION_KEY` are NOT in Render yet. `config.whizhq.configured()`
   gates all three steps' `isApplicable`, so today they report `skipped` and the

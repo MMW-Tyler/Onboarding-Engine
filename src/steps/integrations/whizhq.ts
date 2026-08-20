@@ -231,6 +231,17 @@ function describeOnboardFailure(err: unknown, ctx: StepContext): Error {
       : '';
     return new Error(`whizhq.create_client: WhizHQ rejected the payload: ${f.message}. Nothing was created.${aeHint}`);
   }
+  // clients/onboard is the one automation route that is already live in WhizHQ,
+  // so a 404 here is almost always WHIZHQ_BASE_URL pointing at the wrong host -
+  // typically www vs. apex, where the redirect turns this POST into a GET that
+  // matches no route. Say that, rather than "not deployed yet".
+  if (f.kind === 'not_deployed' && f.status === 404) {
+    return new Error(
+      'whizhq.create_client: WhizHQ returned 404 for /api/automation/clients/onboard. That route is live, ' +
+      'so check WHIZHQ_BASE_URL: it must be the host that answers directly, with no redirect (www vs. apex), ' +
+      "and match WhizHQ's own APP_BASE_URL. Nothing was created.",
+    );
+  }
   return new Error(`whizhq.create_client: ${f.message} (HTTP ${f.status}). Nothing was created.`);
 }
 

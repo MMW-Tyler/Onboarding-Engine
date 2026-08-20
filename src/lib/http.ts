@@ -99,6 +99,25 @@ export async function callApi<T = any>(
   }
 
   const ok = res.ok || (opts.okStatuses?.includes(res.status) ?? false);
+
+  // fetch follows redirects silently, and a 301/302 on a POST is downgraded to a
+  // GET with no body (per the Fetch standard - only 307/308 preserve the method).
+  // So a base URL pointing at a host that redirects - the classic www vs. apex
+  // mistake - turns a write into a read that matches no route, and the caller
+  // sees a bare 404 it will most likely read as "not deployed". Record the URL we
+  // actually ended up at so that is diagnosable from the log instead of a mystery.
+  const redirected = res.url && res.url !== url;
+  if (redirected && method !== 'GET' && method !== 'HEAD') {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: `${method} ${label}`,
+      parsed_error:
+        `request was redirected: ${url} -> ${res.url}. A ${method} following a 301/302 is ` +
+        'converted to a GET with no body, so check the base URL points at the host that ' +
+        'answers directly (www vs. apex, http vs. https).',
+    });
+  }
+
   await ctx.logEvent({
     level: ok ? 'info' : 'error',
     endpoint: `${method} ${label}`,
@@ -106,6 +125,7 @@ export async function callApi<T = any>(
     response_body: parsed,
     parsed_error: ok ? undefined : summarizeError(parsed, res.status),
     duration_ms: Date.now() - started,
+    ...(redirected ? { request: { final_url: res.url } } : {}),
   });
 
   if (!ok) {
