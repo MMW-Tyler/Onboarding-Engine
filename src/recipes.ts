@@ -108,6 +108,10 @@ export const recipes: Record<string, string[]> = {
   // any more - kept as a hand-pickable bundle in the dashboard for the day
   // someone wants a one-off research pass on a client. Nothing runs these unless
   // a human selects them.
+  //
+  // ghl.a2p_registration is gone entirely (2026-08-20, Tyler): the GHL snapshot
+  // import already does most of the 10DLC legwork, so auto-filling the
+  // registration was more machinery than the remaining manual step is worth.
   wave2_research: [
     'profile.normalize_clientform',
     'slack.post_clientform_profile',
@@ -118,7 +122,6 @@ export const recipes: Record<string, string[]> = {
     'research.press_topics',
     'research.content_calendar',
     'advicelocal.listings',
-    'ghl.a2p_registration',
     'wave2.rollup',
   ],
 };

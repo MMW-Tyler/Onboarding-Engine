@@ -103,15 +103,19 @@ curl localhost:10000/status               # mode + step/job tallies
 - **M5 — Wave 2 AI + research: built, then retired from the automated path
   (2026-08-19).** Prompts 3–6 (GBP optimization plan, crawl→brand/SEO report, SEO
   roadmap, press topics + content calendar), DataForSEO inputs, Advice Local
-  listings, GHL A2P and wave2.rollup all still exist as steps and as the
-  hand-pickable `wave2_research` recipe, but **nothing triggers them
-  automatically**: the team decided the engine shouldn't reach into the tools
+  listings and wave2.rollup all still exist as steps and as the hand-pickable
+  `wave2_research` recipe, but **nothing triggers them automatically**: the team decided the engine shouldn't reach into the tools
   they already run these tasks in. What the Client MMW onboarding form triggers
   now is `clientform_delivery` — normalize the answers, post the form to the
   client's Slack channel, stop. Namecheap live is still behind the two-key
   unlock; the domain/email stack can be pinned dry in live via
   STEP_DRY_OVERRIDE.
 
+- **GHL A2P auto-registration: scrapped (2026-08-20).** `ghl.a2p_registration`
+  is deleted. The GHL snapshot import in `ghl.provision_subaccount` already
+  covers most of the 10DLC legwork, so automating the registration form was more
+  machinery than the leftover manual step justified — and its endpoint was never
+  confirmed against GHL's API.
 - **WhizHQ hand-off (2026-08-20): implemented, inert until configured.** Wave 1
   creates the client in WhizHQ (the `mmw-platform` app), puts their **client
   dashboard** link in the Slack roll-up, and crawls their website so WhizHQ's
@@ -126,8 +130,8 @@ curl localhost:10000/status               # mode + step/job tallies
   detection) before changing any of it.
 
 The dashboard is styled to the MMW aesthetic (Fraunces / Space Mono / Newsreader,
-cream-paper palette). Several M5 external calls (DataForSEO, Advice Local, GHL
-A2P, Google Places) are best-effort vs documented APIs and carry TODO/verify
+cream-paper palette). Several M5 external calls (DataForSEO, Advice Local,
+Google Places) are best-effort vs documented APIs and carry TODO/verify
 markers — validate in dry-run, then one controlled live test each.
 
 > Live API calls for non-Slack integrations were written against documented APIs

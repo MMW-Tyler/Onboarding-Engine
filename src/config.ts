@@ -133,7 +133,6 @@ export const config = {
     // Company, not a Location.)
     companyId: () => optional('GHL_COMPANY_ID'),
     snapshotId: () => optional('GHL_SNAPSHOT_ID'),
-    a2pFieldMap: () => optional('GHL_A2P_CUSTOM_FIELD_MAP'),
     // GHL branded-domain DNS record written onto the client domain so a GHL
     // funnel/site resolves through it. MMW's standard is a CNAME at host "go"
     // pointing to brand.ludicrous.cloud; these are the defaults so no env is

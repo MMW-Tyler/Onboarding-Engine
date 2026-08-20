@@ -196,9 +196,10 @@ with the URL sees that client's portal.
   run: `profile.normalize_clientform` -> `slack.post_clientform_profile`
   (recipe `clientform_delivery`). The old bundle (gbp.optimize_plan,
   crawl.site_report, dataforseo.pull, seo.roadmap, research.press_topics,
-  research.content_calendar, advicelocal.listings, ghl.a2p_registration,
-  wave2.rollup) is still registered and still selectable by hand in the
-  dashboard as the `wave2_research` recipe - nothing fires it on its own.
+  research.content_calendar, advicelocal.listings, wave2.rollup) is still
+  registered and still selectable by hand in the dashboard as the
+  `wave2_research` recipe - nothing fires it on its own. (ghl.a2p_registration
+  was in that bundle too and is now deleted outright - see below.)
 - `slack.post_clientform_profile` is built so the form CANNOT get stuck:
   - normalize is a **soft** dependency, so the broken-zap case (0/40 fields
     mapped - see the Zapier note above) still posts every answer verbatim with a
@@ -207,9 +208,17 @@ with the URL sees that client's portal.
     posts to `SLACK_FALLBACK_CHANNEL_ID` with a "couldn't match this to a client
     channel" banner instead of parking the data in the DB unseen.
   - it only pins the message in the client's own channel, never in the fallback.
-- Open question left for Tyler: `ghl.a2p_registration` went out with the research
-  chain because it ran after the form. If 10DLC registration should still happen
-  automatically, it belongs in Wave 1, not here.
+- **RESOLVED (2026-08-20, Tyler): the A2P step is scrapped, not relocated.**
+  `ghl.a2p_registration` is deleted, not just unhooked - registry, recipes,
+  `wave2.rollup`'s status list and the `GHL_A2P_CUSTOM_FIELD_MAP` config getter
+  are all gone. Reason: **`ghl.provision_subaccount` imports the GHL snapshot
+  (`GHL_SNAPSHOT_ID`), which already does most of the 10DLC legwork**, so
+  auto-filling the registration was more machinery than the remaining manual
+  step is worth. It was also never verifiable - the step shipped with a
+  placeholder endpoint (`/locations/{id}/compliance/a2p-registration`) that was
+  never confirmed against GHL's API, so leaving dead code around only invited
+  someone to wire it up against a wrong URL. If 10DLC ever does need automating,
+  start from the GHL docs, not from `git show` of that step.
 
 ## Phase two decisions (2026-07-16, from Tyler)
 

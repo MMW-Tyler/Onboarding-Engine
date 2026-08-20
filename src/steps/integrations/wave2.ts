@@ -176,7 +176,6 @@ const DRAFT_STEPS: { key: string; title: string }[] = [
 const STATUS_STEPS = [
   'dataforseo.pull',
   'advicelocal.listings',
-  'ghl.a2p_registration',
 ];
 
 // Emoji per deliverable, used both in the canvas headers and the in-thread
@@ -308,7 +307,6 @@ const STEP_LABELS: Record<string, string> = {
   'research.content_calendar': 'Content calendar',
   'dataforseo.pull': 'Keyword data (DataForSEO)',
   'advicelocal.listings': 'Local listings (Advice Local)',
-  'ghl.a2p_registration': 'A2P 10DLC registration',
 };
 
 async function wave2Rollup(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -405,7 +403,7 @@ export const wave2Steps: Step[] = [
   aiStep('research.content_calendar', G, (ctx) => research(ctx, 'calendar')),
   {
     key: 'wave2.rollup', wave: 2, safetyClass: 'reversible-write',
-    dependsOn: ['gbp.optimize_plan', 'crawl.site_report', 'seo.roadmap', 'research.press_topics', 'research.content_calendar', 'dataforseo.pull', 'advicelocal.listings', 'ghl.a2p_registration'],
+    dependsOn: ['gbp.optimize_plan', 'crawl.site_report', 'seo.roadmap', 'research.press_topics', 'research.content_calendar', 'dataforseo.pull', 'advicelocal.listings'],
     maxAttempts: 3, isApplicable: () => true, runReal: wave2Rollup, runDry: wave2RollupDry,
   },
 ];

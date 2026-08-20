@@ -94,7 +94,7 @@ async function runNormalize(
   // (Wave 1's Sales Intake form has separate street/city/state/zip questions,
   // but Wave 2 does not) - so validate it against Google Places and populate
   // the structured nap_street/nap_city/nap_state/nap_zip fields that
-  // advicelocal.listings and ghl.a2p_registration read directly. This also
+  // advicelocal.listings reads directly. This also
   // catches client typos (e.g. a mistyped ZIP). Only applied when Places
   // resolves every component - a partial match never overwrites good data
   // with a guess, and always falls back silently (logged for review) rather

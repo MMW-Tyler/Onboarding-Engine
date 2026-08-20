@@ -14,7 +14,6 @@ import { crawlSteps } from './integrations/crawl.js';
 import { wave2Steps } from './integrations/wave2.js';
 import { dataforseoSteps } from './integrations/dataforseo.js';
 import { adviceLocalSteps } from './integrations/advicelocal.js';
-import { ghlA2pSteps } from './integrations/ghl_a2p.js';
 import { phase0Steps } from './integrations/phase0.js';
 import { whizhqSteps } from './integrations/whizhq.js';
 
@@ -61,7 +60,6 @@ const ALL: Step[][] = [
   wave2Steps,
   dataforseoSteps,
   adviceLocalSteps,
-  ghlA2pSteps,
   phase0Steps,
   whizhqSteps,
 ];
