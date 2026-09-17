@@ -620,7 +620,14 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
   if (driveId) assetLines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${val(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
 
   const locId = r.ghl_location_id as string | undefined;
-  if (locId) assetLines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${val(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
+  if (locId) {
+    assetLines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${val(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
+    // 10DLC is not automated (the snapshot import covers most of the setup, the
+    // submission itself is manual) and approval takes days, so it has to be
+    // started now rather than when the first campaign is ready to send. Every
+    // program uses SMS somewhere; a fixed-term one has no room to wait on it.
+    assetLines.push(`        ↳ *Action:* finish and submit the *A2P 10DLC registration* in this sub-account. The snapshot covers most of the setup, but SMS (event invites, RSVP reminders, follow-ups) cannot send until the registration is approved, which takes days.`);
+  }
 
   const platformLine = websiteSection(profile);
 

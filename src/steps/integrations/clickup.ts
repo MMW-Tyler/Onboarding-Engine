@@ -2,7 +2,7 @@ import type { OnboardingRun, Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { packageOf, isPracticePro, type PackageDefinition } from '../../lib/packages.js';
+import { packageKeyOf, packageOf, type PackageDefinition } from '../../lib/packages.js';
 import { profileOf, siblingOutput, simId, simulated } from './util.js';
 
 /**
@@ -12,10 +12,11 @@ import { profileOf, siblingOutput, simId, simulated } from './util.js';
  *  1. clickup.clone_template - DUPLICATE the client template FOLDER for this
  *     client (POST /space/{spaceId}/folder_template/{templateId}), which clones
  *     all nested lists/tasks. Stores the new folder id on the run.
- *  2. clickup.onboarding_list - Practice Pro clients only: duplicate the
- *     "Practice Pro - Onboarding Sample" LIST into the "New Client Onboarding"
- *     folder, named for the client. That is the onboarding checklist the team
- *     works through; the folder from (1) is the client's ongoing workspace.
+ *  2. clickup.onboarding_list - for programs that have a sample list: duplicate
+ *     "<Program> - Onboarding Sample" into the "New Client Onboarding" folder,
+ *     named for the client. That is the onboarding checklist the team works
+ *     through; the folder from (1) is the client's ongoing workspace. Programs
+ *     without a sample list yet report `skipped` (see sampleListIdFor).
  *  3. clickup.master_tracker - append a task for this client to the existing
  *     master account tracker LIST (POST /list/{listId}/task), named for the
  *     client and with the tracker's custom fields filled in from the agreement
@@ -51,6 +52,27 @@ function packageTextOf(run: OnboardingRun): string {
     if (value != null) return String(value);
   }
   return '';
+}
+
+/**
+ * The sample onboarding list this run's program is copied from, or '' when the
+ * program has no sample list yet (clickup.onboarding_list then skips).
+ *
+ * ClickUp has no duplicate-list endpoint and these samples are not saved as
+ * list templates, so each program needs a real list to copy task-by-task.
+ * Practice Pro has had one since August; Whiz Launch needs one built before its
+ * checklist can be created (CLICKUP_WHIZ_LAUNCH_LIST_ID). Smart Start and Whiz
+ * Works still have none.
+ */
+function sampleListIdFor(run: OnboardingRun): string {
+  switch (packageKeyOf(packageTextOf(run))) {
+    case 'practice_pro':
+      return config.clickup.practiceProListId().trim();
+    case 'whiz_launch':
+      return config.clickup.whizLaunchListId().trim();
+    default:
+      return '';
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -275,7 +297,7 @@ function copyTaskBody(source: CuTask, targetFields: Map<string, CuField>, status
 
 async function onboardingListReal(ctx: StepContext): Promise<Record<string, unknown>> {
   const folderId = config.clickup.onboardingFolderId();
-  const sourceListId = config.clickup.practiceProListId();
+  const sourceListId = sampleListIdFor(ctx.run);
   const name = clientName(ctx);
 
   // 1. Reuse a same-named list in the folder if one is already there (a retry,
@@ -375,12 +397,13 @@ async function onboardingListDry(ctx: StepContext): Promise<Record<string, unkno
   // Read-safe probe: confirm the folder + sample list are reachable and report
   // how many tasks a live run would copy.
   await callApi(ctx, `${CU}/folder/${config.clickup.onboardingFolderId()}/list`, 'clickup.folder.lists', { headers: authHeader() });
-  const source = await listTasks(ctx, config.clickup.practiceProListId());
+  const sourceListId = sampleListIdFor(ctx.run);
+  const source = await listTasks(ctx, sourceListId);
   return simulated({
     list_id: simId('list'),
     list_name: clientName(ctx),
     folder_id: config.clickup.onboardingFolderId(),
-    source_list_id: config.clickup.practiceProListId(),
+    source_list_id: sourceListId,
     tasks_to_copy: source.length,
   });
 }
@@ -442,14 +465,20 @@ export function parseDateMs(raw: string | undefined): number | undefined {
 }
 
 /** Months in a contract-length answer ("12 months", "1 year"), default 12. */
-export function contractMonths(raw: string | undefined): number {
+/**
+ * Contract length in months from the intake's free-text answer, falling back to
+ * `fallback` when it gives nothing parseable. The fallback is the program's own
+ * term, so a blank answer on a 3-month Whiz Launch no longer dates the renewal
+ * a year out.
+ */
+export function contractMonths(raw: string | undefined, fallback = 12): number {
   const v = (raw ?? '').toLowerCase();
   const years = v.match(/(\d+)\s*year/);
   if (years) return Number(years[1]) * 12;
   const months = v.match(/(\d+)\s*month/);
   if (months) return Number(months[1]);
   const bare = v.match(/\d+/);
-  return bare ? Number(bare[0]) : 12;
+  return bare ? Number(bare[0]) : fallback;
 }
 
 function addMonthsMs(ms: number, months: number): number {
@@ -517,15 +546,26 @@ function trackerFieldValues(
   };
 
   // Monthly commitment: what the rep invoiced beats the program's list price.
+  // A 'fixed' program (one total fee for the whole term) writes nothing here -
+  // its total would read as MRR and overstate the book by the term length. The
+  // number goes into Notes below instead.
   const invoiced = parseMoney(p.invoice_amount);
-  if (invoiced ?? pkg?.monthlyPrice) desired['Monthly Committment'] = invoiced ?? pkg?.monthlyPrice;
+  const recurring = pkg ? pkg.billing === 'monthly' : true;
+  if (recurring) {
+    const monthly = invoiced ?? (pkg ? pkg.price : undefined);
+    if (monthly) desired['Monthly Committment'] = monthly;
+  }
 
   // The intake form is filled in when the deal closes, so its timestamp is the
-  // best "contract signed" date we have; renewal is the start date + term.
+  // best "contract signed" date we have; renewal is the start date + term. On a
+  // fixed-term program the agreement sets the term, so the program wins over an
+  // intake answer that disagrees (flagged in Notes below).
   const signed = parseDateMs(p.submitted_at);
   if (signed) desired['Contract Signed'] = signed;
+  const fromIntake = contractMonths(p.contract_length, pkg?.termMonths ?? 12);
+  const months = pkg && pkg.billing === 'fixed' ? pkg.termMonths : fromIntake;
   const start = parseDateMs(p.start_date);
-  if (start) desired['Renewal Date'] = addMonthsMs(start, contractMonths(p.contract_length));
+  if (start) desired['Renewal Date'] = addMonthsMs(start, months);
 
   // MMW Built Website only when the intake says we are building/cloning one -
   // a glow-up or a hosting transfer is not an MMW-built site.
@@ -535,9 +575,15 @@ function trackerFieldValues(
 
   const notes = [
     pkg ? `${pkg.contractType} scope: ${pkg.scopeNotes.join('; ')}.` : '',
+    pkg && pkg.billing === 'fixed'
+      ? `Billing: $${pkg.price} total for the ${pkg.termMonths}-month program, not a monthly retainer - Monthly Committment left blank on purpose.`
+      : '',
+    pkg && pkg.billing === 'fixed' && fromIntake !== pkg.termMonths
+      ? `Intake says the contract runs ${fromIntake} months, but ${pkg.contractType} is a fixed ${pkg.termMonths}-month term - renewal date set from the agreement.`
+      : '',
     p.special_additions ? `Special additions promised: ${p.special_additions}` : '',
-    invoiced && pkg && invoiced !== pkg.monthlyPrice
-      ? `Invoice amount on intake ($${invoiced}) differs from the ${pkg.contractType} list price ($${pkg.monthlyPrice}) - confirm before billing.`
+    invoiced && pkg && invoiced !== pkg.price
+      ? `Invoice amount on intake ($${invoiced}) differs from the ${pkg.contractType} ${pkg.billing === 'fixed' ? 'program total' : 'list price'} ($${pkg.price}) - confirm before billing.`
       : '',
     'Set by OnboardEngine from the Sales Intake form.',
   ].filter(Boolean);
@@ -625,10 +671,11 @@ export const clickupSteps: Step[] = [
     isApplicable: () => true, runReal: cloneTemplateReal, runDry: cloneTemplateDry,
   },
   {
-    // Practice Pro only - the other programs have no onboarding sample list yet.
+    // Only for programs with a sample list to copy - the rest skip (see
+    // sampleListIdFor).
     key: 'clickup.onboarding_list', wave: 1, safetyClass: 'reversible-write',
     dependsOn: ['profile.normalize_intake'], maxAttempts: 3,
-    isApplicable: (run) => isPracticePro(packageTextOf(run)),
+    isApplicable: (run) => sampleListIdFor(run) !== '',
     runReal: onboardingListReal, runDry: onboardingListDry,
   },
   {

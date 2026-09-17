@@ -3,6 +3,7 @@ import { db } from '../../supabase.js';
 import { config } from '../../config.js';
 import { profileOf, siblingOutput, simId, simulated } from './util.js';
 import { clientSiteHost } from './crawl.js';
+import { packageKeyOf } from '../../lib/packages.js';
 import { slackPost } from './slack.js';
 import {
   bootstrapFinished,
@@ -122,8 +123,9 @@ async function onboardBody(ctx: StepContext): Promise<WhizOnboardRequest> {
   if (p.client_specialty) body.vertical = p.client_specialty;
 
   // Passing a program starts the onboarding launchpad AND switches the client
-  // dashboard's onboarding section on (the one section that ships off).
-  const program = config.whizhq.program();
+  // dashboard's onboarding section on (the one section that ships off). The
+  // launchpad can differ per MMW program - see config.whizhq.program.
+  const program = config.whizhq.program(packageKeyOf(p.package) ?? undefined);
   if (program) body.program = program;
 
   // Slack channel ID (C...), never "#name" - a name is stored as-is and every

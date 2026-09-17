@@ -55,6 +55,15 @@ describe('parseDateMs + contractMonths - renewal date maths', () => {
     expect(contractMonths(undefined)).toBe(12);
     expect(contractMonths('annual')).toBe(12);
   });
+  it("falls back to the program's own term when the answer says nothing", () => {
+    // A blank contract length on a 3-month Whiz Launch used to date the renewal
+    // a year out, which is the Day 60 conversion conversation missed entirely.
+    expect(contractMonths(undefined, 3)).toBe(3);
+    expect(contractMonths('', 3)).toBe(3);
+    expect(contractMonths('TBD', 3)).toBe(3);
+    // An explicit answer still wins on a monthly program.
+    expect(contractMonths('6 months', 3)).toBe(6);
+  });
 });
 
 describe('resolveFields - names to live ClickUp field/option ids', () => {

@@ -30,8 +30,8 @@ Three separate ClickUp things get created per Wave 1 run - don't confuse them:
    the folder template into the template space (SEO / Account Management / Ads
    Coordination / ... lists + the Master Record doc). Stored on
    `onboarding_runs.clickup_folder_id`.
-2. **`clickup.onboarding_list`** — **Practice Pro clients only.** Duplicates the
-   list "Practice Pro - Onboarding Sample" (`901711324840`) into the folder
+2. **`clickup.onboarding_list`** — **programs that have a sample list.**
+   Duplicates "<Program> - Onboarding Sample" into the folder
    "New Client Onboarding" (`90176700365`, space "Onboarding | Offboarding") and
    names it for the client — the same place `Kale MD`, `Sereno Sante`, etc. live.
    ClickUp's public API has **no duplicate-list endpoint** and the sample is not
@@ -42,10 +42,13 @@ Three separate ClickUp things get created per Wave 1 run - don't confuse them:
    sample tasks takes about a minute. It is resume-safe: a same-named list in
    the folder is reused and tasks already there (matched by name) are skipped,
    so a retry after a partial copy finishes the job instead of duplicating.
-   Overridable via `CLICKUP_ONBOARDING_FOLDER_ID` / `CLICKUP_PRACTICE_PRO_LIST_ID`
-   (both optional, defaulted to the live ids, so no Render config is needed).
-   Smart Start / Whiz Works have no sample list yet — the step reports `skipped`
-   for them. Add one and give it a config id when they do.
+   Which list a run copies is decided by `sampleListIdFor` in
+   `steps/integrations/clickup.ts`: Practice Pro ->
+   `CLICKUP_PRACTICE_PRO_LIST_ID` (defaulted to `901711324840`), Whiz Launch ->
+   `CLICKUP_WHIZ_LAUNCH_LIST_ID` (**no default — the list does not exist in
+   ClickUp yet**, so Whiz Launch runs report `skipped` until someone builds it
+   and sets the id). Smart Start / Whiz Works have no sample list either. The
+   folder is overridable via `CLICKUP_ONBOARDING_FOLDER_ID`.
 3. **`clickup.master_tracker`** — the row in the Master Account Tracker list
    (`CLICKUP_MASTER_TRACKER_LIST_ID`). The task name is **just the client name**
    (not "Onboarding - <client>"), and its custom fields are filled from the
@@ -54,8 +57,8 @@ Three separate ClickUp things get created per Wave 1 run - don't confuse them:
 ### Where the tracker's deliverable fields come from
 
 `src/lib/packages.ts` holds the package matrix: for each program (Smart Start /
-Practice Pro / Whiz Works) the "Contract Type" option, the standard monthly
-price, and the tracker's deliverable dropdowns (SEO Services, Blogs, GBP
+Practice Pro / Whiz Works / Whiz Launch) the "Contract Type" option, how it is
+billed, its term, and the tracker's deliverable dropdowns (SEO Services, Blogs, GBP
 Optimization/Posting, Citations, Press Releases, E-Mail Marketing (+ Platform),
 Dr. Social Whiz Access, Events & Webinars, Lead Magnet, Lead Gen Ads Management,
 Reputation Management, MMW Hosting, GHL Subaccount, Top Doctor Magazine
@@ -65,6 +68,15 @@ program agreements in Drive** (`Smart_Start_Agreement (2026)`,
 update the table when a program's scope changes. Cadences the dropdowns can't
 express (2 blogs/mo, 1 event a year, graphic-design projects) go into the
 tracker's Notes field, along with the intake's "special additions".
+
+**Billing shape matters.** A `billing: 'monthly'` program writes its price (or
+the intake's invoice amount, which wins) into `Monthly Committment`. A
+`billing: 'fixed'` program — today only Whiz Launch, $5,000 for a fixed 3-month
+term — writes **nothing** there on purpose: a program total sitting in a monthly
+field overstates MRR by the length of the term. The total goes into Notes
+instead. `termMonths` is the renewal-date fallback for a monthly program and is
+*authoritative* for a fixed one, so a rep typing "12 months" on a Whiz Launch
+intake gets a 3-month renewal date plus a Notes line flagging the mismatch.
 
 The step never writes a hardcoded field/option UUID: it reads the tracker
 list's live field definitions and matches by **name**, so a renamed field or
@@ -77,6 +89,49 @@ intake's website build type). Account Executive, Happiness Level, Maintenance
 Level and the meeting dates are deliberately left blank — a human sets those.
 The `Address` (location) field is also left alone: ClickUp needs lat/lng for it
 and `lib/places.ts` doesn't return coordinates.
+
+## Whiz Launch (2026-09-17)
+
+The fourth program, and the first one that is **not** an ongoing retainer: a
+fixed 3-month, $5,000 new-practice launch sprint ($2,500 at signing, $2,500 on
+Day 45), sold to practices that already have a website.
+
+**It runs `full_onboarding` unchanged.** Every step applies, so there is no
+`whiz_launch` recipe. What differs is data, not flow: the `packages.ts` entry,
+which sample list `clickup.onboarding_list` copies, and the tracker fields.
+
+Things that look like they should differ but don't:
+
+- **The domain + email stack stays.** It is tempting to read "3-month program,
+  no website" as "no domain needed" — that is wrong, and it was nearly shipped
+  that way. `namecheap.purchase_domain` -> `mailgun.*` -> `dns.mailgun_records`
+  is what makes the managed event's invites, RSVP confirmations, reminders and
+  post-event follow-up sequence deliverable, and `dns.ghl_records` gives the
+  invite funnel and RSVP pages the branded `go.<domain>` host instead of a raw
+  LeadConnector URL. `warmup.enroll` matters *more* here than on a retainer: a
+  brand-new domain's first real send being an event invite blast is how you land
+  in spam on the deliverable the client remembers.
+- **The website answer is still theirs, not ours.** Same rule as everywhere:
+  `profile.website_url` is the client's existing site, `run.domain` is the
+  sending domain the engine bought. `MMW Hosting` and `MMW Built Website` are
+  both `No` for this program.
+
+The real risk is the clock, not the scope. Warmup needs weeks, A2P 10DLC
+approval needs days, and the client owes 6-8 weeks' notice for the event, which
+has to land inside a 90-day term. All three start in week one or the event
+slips. `slack.wave1_rollup` now carries an A2P action line under the GHL
+sub-account for exactly this reason (all programs, not just Whiz Launch — 10DLC
+is a manual submission, deliberately not automated, see the A2P note below).
+
+Still outstanding, both human jobs in ClickUp:
+
+1. **No "Whiz Launch" option on the tracker's Contract Type dropdown.** Until
+   someone adds it, `clickup.master_tracker` reports it in `fields_unresolved`
+   and leaves the field blank rather than writing garbage.
+2. **No "Whiz Launch - Onboarding Sample" list.** Until one exists and
+   `CLICKUP_WHIZ_LAUNCH_LIST_ID` is set, `clickup.onboarding_list` skips, so
+   these clients get no onboarding checklist — which is the worst thing to be
+   missing on a program whose whole risk is scheduling.
 
 ## Production URL + Zapier wiring (IMPORTANT - stop asking the user for this)
 

@@ -67,9 +67,14 @@ export const config = {
     // one onboarding checklist list per client. Defaults to the live folder so
     // no extra Render config is needed.
     onboardingFolderId: () => optional('CLICKUP_ONBOARDING_FOLDER_ID', '90176700365'),
-    // The list duplicated for each Practice Pro client ("Practice Pro -
-    // Onboarding Sample"), also inside the onboarding folder.
+    // The sample onboarding list duplicated for each client, per program, all
+    // inside the onboarding folder. A program with no sample list yet resolves
+    // to '' and clickup.onboarding_list reports `skipped` for it (see
+    // sampleListIdFor in steps/integrations/clickup.ts).
     practiceProListId: () => optional('CLICKUP_PRACTICE_PRO_LIST_ID', '901711324840'),
+    // No default: the "Whiz Launch - Onboarding Sample" list does not exist in
+    // ClickUp yet. Set CLICKUP_WHIZ_LAUNCH_LIST_ID in Render once it does.
+    whizLaunchListId: () => optional('CLICKUP_WHIZ_LAUNCH_LIST_ID'),
   },
   drive: {
     saJson: () => required('GDRIVE_SA_JSON'),
@@ -168,8 +173,18 @@ export const config = {
     /**
      * The onboarding launchpad program to start for each new client. Passing one
      * also switches the client dashboard's onboarding section on.
+     *
+     * `key` is the MMW program key (lib/packages.ts), letting a program run a
+     * different launchpad: a 3-month Whiz Launch sprint is not the same shape as
+     * a retainer's 30-day ramp. Per-program keys are read from
+     * WHIZHQ_PROGRAM_<KEY> and fall back to WHIZHQ_PROGRAM when unset, because
+     * the launchpad programs are defined inside WhizHQ and an id it does not
+     * know would 400 the create call. Set one only once it exists over there.
      */
-    program: () => optional('WHIZHQ_PROGRAM', 'new_client_30day'),
+    program: (key?: string) => {
+      const perProgram = key ? optional(`WHIZHQ_PROGRAM_${key.toUpperCase()}`).trim() : '';
+      return perProgram || optional('WHIZHQ_PROGRAM', 'new_client_30day');
+    },
     /**
      * AE to assign the client to. The Sales Intake form has no "who sold this"
      * question, so there is nothing per-client to read - this is a single agency

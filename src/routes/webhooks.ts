@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { db } from '../supabase.js';
 import { createRun, addStepsToRun } from '../engine/runs.js';
 import { extractWebsiteDomain, toHost, looksLikeDomain } from '../lib/domain.js';
+import { isOnboardingPackage } from '../lib/packages.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -33,13 +34,6 @@ function slackChannelFromBody(body: Record<string, unknown>): string | null {
   return null;
 }
 
-/**
- * Only these MMW packages get the full onboarding setup. Any other package
- * (Website build/clone, a-la-carte events/webinars/ads, etc.) does NOT run the
- * engine for now - we can add tailored recipes for those later.
- */
-const ONBOARDING_PACKAGES = [/smart start/i, /practice pro/i, /whiz works/i];
-
 /** Read the "MMW Package" value from the intake payload (string or array).
  *  Zapier's outgoing field name for this question has drifted before (e.g. it
  *  once sent it as "MMW Services" instead of "MMW Package"), so match on any
@@ -53,17 +47,25 @@ function packageValue(body: Record<string, unknown>): string {
   return '';
 }
 
+/**
+ * Only known MMW programs get the full onboarding setup. Any other package
+ * (Website build/clone, a-la-carte events/webinars/ads, etc.) does NOT run the
+ * engine for now - we can add tailored recipes for those later.
+ *
+ * The gate is lib/packages.ts itself rather than a second list of regexes, so
+ * adding a program there is all it takes for its intake forms to start creating
+ * runs (and the two can never drift apart).
+ */
 function packageNeedsOnboarding(body: Record<string, unknown>): boolean {
-  const val = packageValue(body);
-  return ONBOARDING_PACKAGES.some((re) => re.test(val));
+  return isOnboardingPackage(packageValue(body));
 }
 
 webhooksRouter.post('/webhook/intake', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
   const body = (req.body ?? {}) as Record<string, unknown>;
 
-  // Gate: only Smart Start / Practice Pro / Whiz Works get onboarding. Accept the
-  // webhook so Zapier sees success, but create no run for other packages.
+  // Gate: only a known MMW program gets onboarding. Accept the webhook so
+  // Zapier sees success, but create no run for other packages.
   if (!packageNeedsOnboarding(body)) {
     const pkg = packageValue(body);
     console.log(
