@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toHost, looksLikeDomain, firstDomainToken, extractWebsiteDomain, websiteHostFrom } from './domain.js';
+import { toHost, looksLikeDomain, firstDomainToken, extractWebsiteDomain, websiteHostFrom, emailFrom } from './domain.js';
 
 describe('toHost - tolerant of messy form input', () => {
   it('strips scheme, www, path, query, casing, and whitespace', () => {
@@ -90,5 +90,77 @@ describe('extractWebsiteDomain - webhook run-matching', () => {
   it('returns null rather than a false match on a non-domain answer', () => {
     const body = { 'What is your website URL?': 'Premier Body Sculpting &Esthetics (changing name)' };
     expect(extractWebsiteDomain(body)).toBeNull();
+  });
+});
+
+describe('emailFrom - one field, more than one address', () => {
+  it('handles the real answer that stalled the Alevra run', () => {
+    // Literal intake value. HubSpot 400'd on the whole string (INVALID_EMAIL)
+    // and GHL 422'd ("prospectInfo.email must be an email"), flagging both
+    // steps and blocking phase0.gate.
+    const v = emailFrom('john@alevra.com  and tanvir@alevra.com');
+    expect(v.email).toBe('john@alevra.com');
+    expect(v.all).toEqual(['john@alevra.com', 'tanvir@alevra.com']);
+    expect(v.extras).toEqual(['tanvir@alevra.com']);
+    expect(v.reason).toBe('multiple');
+  });
+
+  it('splits on the separators reps actually type', () => {
+    for (const raw of [
+      'a@x.com, b@x.com',
+      'a@x.com; b@x.com',
+      'a@x.com and b@x.com',
+      'a@x.com / b@x.com',
+      'a@x.com\nb@x.com',
+      '  a@x.com  |  b@x.com  ',
+    ]) {
+      const v = emailFrom(raw);
+      expect(v.email).toBe('a@x.com');
+      expect(v.all).toEqual(['a@x.com', 'b@x.com']);
+    }
+  });
+
+  it('leaves a single clean address alone', () => {
+    const v = emailFrom('barriesteinberg@gmail.com');
+    expect(v.email).toBe('barriesteinberg@gmail.com');
+    expect(v.extras).toEqual([]);
+    expect(v.reason).toBeNull();
+  });
+
+  it('strips whitespace, casing, mailto: and surrounding commentary', () => {
+    expect(emailFrom('  Dr.Jane@Practice.COM ').email).toBe('dr.jane@practice.com');
+    expect(emailFrom('mailto:jane@practice.com').email).toBe('jane@practice.com');
+    expect(emailFrom('best is jane@practice.com (checks it daily)').email).toBe('jane@practice.com');
+    // Case and surrounding whitespace alone are not worth flagging to a human:
+    // the answer WAS a single bare address, just untidily typed.
+    expect(emailFrom('  Dr.Jane@Practice.COM ').reason).toBeNull();
+    // Real surrounding text is worth flagging.
+    expect(emailFrom('best is jane@practice.com (checks it daily)').reason).toBe('trimmed');
+  });
+
+  it('does not treat a trailing sentence period as part of the domain', () => {
+    expect(emailFrom('email her at jane@practice.com.').email).toBe('jane@practice.com');
+  });
+
+  it('collapses duplicates rather than reporting a phantom second contact', () => {
+    const v = emailFrom('jane@practice.com, Jane@Practice.com');
+    expect(v.all).toEqual(['jane@practice.com']);
+    expect(v.extras).toEqual([]);
+    expect(v.reason).toBe('trimmed');
+  });
+
+  it('keeps consumer mailbox addresses - unlike the website resolver', () => {
+    // A gmail address is a fine contact address; it is only useless as a
+    // *website* answer (see websiteHostFrom's free_email reason).
+    expect(emailFrom('drjane@gmail.com').email).toBe('drjane@gmail.com');
+    expect(websiteHostFrom('drjane@gmail.com').host).toBeNull();
+  });
+
+  it('reports no_email rather than guessing', () => {
+    for (const raw of ['n/a', 'will provide later', 'ask the front desk', '', null, undefined]) {
+      const v = emailFrom(raw);
+      expect(v.email).toBeNull();
+      expect(v.reason).toBe('no_email');
+    }
   });
 });

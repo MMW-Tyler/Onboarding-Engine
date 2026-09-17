@@ -71,6 +71,74 @@ export function isFreeEmailHost(value: string): boolean {
 const EMAIL_TOKEN =
   /(?:mailto:)?[a-z0-9._%+'-]+@([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,})/gi;
 
+/**
+ * Matches a whole email address anywhere in a free-text answer; group 1 is the
+ * address without any `mailto:` prefix. Deliberately the same address shape as
+ * EMAIL_TOKEN above, which captures only the host.
+ */
+const EMAIL_ADDRESS =
+  /(?:mailto:)?([a-z0-9._%+'-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,})/gi;
+
+export type EmailReason =
+  /** the answer was already exactly one address */
+  | null
+  /** one address, but with surrounding text/whitespace/mailto: to strip */
+  | 'trimmed'
+  /** more than one address in the one field; the first won */
+  | 'multiple'
+  /** nothing email-shaped in the answer at all */
+  | 'no_email';
+
+export interface EmailValue {
+  /** the first usable address, or null when the answer yields none */
+  email: string | null;
+  /** every distinct address found, in the order typed */
+  all: string[];
+  /** the addresses after the first - found, but NOT used by any step */
+  extras: string[];
+  /** what had to be done to get there, for logging + human review */
+  reason: EmailReason;
+}
+
+/**
+ * Resolve a free-text email answer to a single usable address.
+ *
+ * The Sales Intake form has one field per role, but reps routinely put more
+ * than one address in it. A real run stalled on the literal answer
+ * "john@alevra.com  and tanvir@alevra.com": HubSpot rejected the whole string
+ * (400 INVALID_EMAIL) and GHL rejected it too (422 prospectInfo.email must be
+ * an email), which flagged both steps and left phase0.gate blocked. Same shape
+ * of problem as the website field, so it gets the same treatment - resolved
+ * once, where the profile is written, rather than re-parsed by each consumer.
+ *
+ * Handles the separators people actually type: "a and b", commas, semicolons,
+ * slashes, newlines, and stray whitespace. Duplicates collapse.
+ *
+ * Note this does NOT reject consumer mailbox hosts the way websiteHostFrom
+ * does. A gmail address is a perfectly good contact address (plenty of
+ * practices use one); it is only useless as a *website* answer.
+ */
+export function emailFrom(raw: string | null | undefined): EmailValue {
+  const value = (raw ?? '').trim();
+  if (!value) return { email: null, all: [], extras: [], reason: 'no_email' };
+
+  const seen = new Set<string>();
+  const all: string[] = [];
+  for (const match of value.matchAll(EMAIL_ADDRESS)) {
+    const address = match[1]!.toLowerCase();
+    if (seen.has(address)) continue;
+    seen.add(address);
+    all.push(address);
+  }
+
+  if (all.length === 0) return { email: null, all: [], extras: [], reason: 'no_email' };
+
+  const email = all[0]!;
+  const extras = all.slice(1);
+  const reason: EmailReason = extras.length > 0 ? 'multiple' : value.toLowerCase() === email ? null : 'trimmed';
+  return { email, all, extras, reason };
+}
+
 export type WebsiteReason =
   /** the value was already a usable domain */
   | null

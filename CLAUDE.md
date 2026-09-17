@@ -343,6 +343,32 @@ with the URL sees that client's portal.
   `namecheap.purchase_domain` is still outstanding - once a domain is purchased
   that column is the domain we actually own DNS for and must not be overwritten.
 
+## Two emails in one intake field (2026-09-17)
+
+- Same class of problem as the website field above, same fix shape. The Sales
+  Intake form has one email field per role, but reps put more than one address
+  in it. The Alevra run (2026-09-11) died on the literal answer
+  `john@alevra.com  and tanvir@alevra.com`: HubSpot returned **400
+  INVALID_EMAIL**, GHL returned **422 `prospectInfo.email must be an email`**,
+  both steps flagged, and `phase0.gate` went to **blocked** - so the run never
+  finished even though everything else had succeeded.
+- `emailFrom()` in `src/lib/domain.ts` resolves a free-text email answer to the
+  first usable address plus the full list, handling the separators people type
+  ("a and b", commas, semicolons, slashes, newlines) and collapsing duplicates.
+  Unlike `websiteHostFrom` it does **not** reject gmail/yahoo hosts - a consumer
+  mailbox is a perfectly good contact address, it is only useless as a website.
+- Applied in `profile.normalize_intake` (and the clientform schema), the one
+  place that writes the profile, so every consumer is fixed at once:
+  `hubspot.upsert`, `ghl.provision_subaccount` and `advicelocal.listings` all
+  read `profileOf(run)` and none of them touch the raw payload.
+- **The extra addresses are not contacted.** Only the first becomes a HubSpot
+  contact / the GHL prospect. The rest are recorded in `unmapped` and named in a
+  warn ("NOT contacted: ...") so a human can add that person by hand. Creating
+  one contact per address is a product decision - who owns the record, which one
+  HubSpot dedups against - so ask Tyler before changing it.
+- An answer with no address at all is dropped from the profile rather than
+  stored, same as a junk website answer, and logged.
+
 ## Why platform detection kept coming back "unknown" (2026-08-12)
 
 - **The main bug: `crawl.detect_platform` read `ctx.run.domain` first.** It and

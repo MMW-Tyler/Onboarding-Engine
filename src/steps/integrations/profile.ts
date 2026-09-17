@@ -2,7 +2,7 @@ import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
 import { loadPromptSystem } from '../../lib/anthropic.js';
 import { normalizeProfile } from '../../profile/canonical.js';
-import { toHost, looksLikeDomain, websiteHostFrom } from '../../lib/domain.js';
+import { toHost, looksLikeDomain, websiteHostFrom, emailFrom } from '../../lib/domain.js';
 import { validateAddress } from '../../lib/places.js';
 
 /**
@@ -83,6 +83,55 @@ async function runNormalize(
           `Set the real website on the run (dashboard: "fix website") before the domain steps run.`,
       });
     }
+  }
+
+  // Email answers get the same treatment as the website answer, and for the same
+  // reason: one field routinely carries more than one address. A live run stalled
+  // on the literal intake answer "john@alevra.com  and tanvir@alevra.com" -
+  // HubSpot returned 400 INVALID_EMAIL, GHL returned 422 "prospectInfo.email must
+  // be an email", both steps flagged, and phase0.gate went to blocked. Resolving
+  // here, in the one place that writes the profile, fixes every consumer at once
+  // (hubspot.upsert, ghl.provision_subaccount, advicelocal.listings).
+  //
+  // What happens to the addresses after the first: NOTHING automatic. Only the
+  // first becomes a HubSpot contact / the GHL prospect. The rest are recorded in
+  // `unmapped` and named in a warn so a human can add that person by hand.
+  // Creating one contact per address would be a product decision (who owns the
+  // record, which one HubSpot dedups against), not a parsing one - ask Tyler
+  // before changing it.
+  const emailKeys = schema === 'intake'
+    ? ['doctor_email', 'office_manager_email']
+    : ['contact_email', 'nap_email'];
+  for (const key of emailKeys) {
+    const answer = profile[key];
+    if (!answer) continue;
+    const { email, extras, reason } = emailFrom(answer);
+    if (!email) {
+      delete profile[key];
+      unmapped.push({ raw_label: key, raw_value: answer, reason: `email_${reason}` });
+      await ctx.logEvent({
+        level: 'warn',
+        endpoint: `profile.normalize_${schema}`,
+        parsed_error:
+          `${key} answer "${answer}" contains no usable email address - left blank. ` +
+          `Add the real address by hand if this person needs a HubSpot/GHL record.`,
+      });
+      continue;
+    }
+    if (email === answer) continue; // already a bare, usable address
+    profile[key] = email;
+    // reason null here means the answer was one address all along and only
+    // needed case/whitespace tidying - not worth a human's attention.
+    if (reason === null) continue;
+    unmapped.push({ raw_label: key, raw_value: answer, reason: `email_${reason}:${email}` });
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: `profile.normalize_${schema}`,
+      parsed_error: extras.length > 0
+        ? `${key} answer "${answer}" holds ${extras.length + 1} addresses - using "${email}". ` +
+          `NOT contacted: ${extras.join(', ')}. Add them by hand if they need to be in HubSpot/GHL.`
+        : `${key} answer "${answer}" had text around the address - using "${email}".`,
+    });
   }
 
   // Merge into the run profile. Sensitive values live under _restricted and are
