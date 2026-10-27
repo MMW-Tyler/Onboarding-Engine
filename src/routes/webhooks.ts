@@ -4,6 +4,8 @@ import { db } from '../supabase.js';
 import { createRun, addStepsToRun } from '../engine/runs.js';
 import { extractWebsiteDomain, toHost, looksLikeDomain } from '../lib/domain.js';
 import { isOnboardingPackage } from '../lib/packages.js';
+import { readReturningAnswers } from '../lib/returning.js';
+import { mapDeterministic } from '../profile/canonical.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -27,6 +29,9 @@ function verifySecret(req: { header: (n: string) => string | undefined }): boole
 function slackChannelFromBody(body: Record<string, unknown>): string | null {
   for (const [label, value] of Object.entries(body)) {
     if (!/slack.*(channel|chan).*id|^channel[_ ]?id$/i.test(label)) continue;
+    // The returning-client "existing Slack channel" answer is read separately
+    // (readReturningAnswers); this is only the channel the zap itself made.
+    if (/existing|current|previous|returning/i.test(label)) continue;
     if (typeof value !== 'string') continue;
     const v = value.trim();
     if (/^[A-Z0-9]{6,}$/i.test(v)) return v;
@@ -76,17 +81,31 @@ webhooksRouter.post('/webhook/intake', async (req, res) => {
   }
 
   try {
-    const result = await createRun({ recipe: 'full_onboarding', input: body });
-    // If Zapier created the channel first and passed the ID, attach it to the run
-    // so slack.create_channel uses it directly (skips lookup + create).
-    const ch = slackChannelFromBody(body);
-    if (ch) {
-      await db().from('onboarding_runs')
-        .update({ slack_channel_id: ch, updated_at: new Date().toISOString() })
-        .eq('id', result.runId);
-    }
-    console.log(`[webhook] intake -> run ${result.runId} (${result.queued.length} steps queued${ch ? `, channel=${ch}` : ''})`);
-    return res.status(202).json({ accepted: true, runId: result.runId, slackChannel: ch });
+    // Which Slack channel the run uses, best first:
+    //   1. a returning client's existing channel (the intake form's link answer);
+    //   2. the channel Zapier created and passed the ID of;
+    //   3. neither - slack.create_channel finds or creates one itself.
+    // Same idea for Drive: a returning client's existing folder is reused by
+    // drive.create_folders instead of cloning the template into a new one.
+    const returning = readReturningAnswers(mapDeterministic(body, 'intake').profile);
+    const zapChannel = slackChannelFromBody(body);
+    const ch = returning.slackChannelId ?? zapChannel;
+    // If the zap was not updated to skip channel creation for returning clients,
+    // it made a second channel anyway. Remember it so the roll-up can say so.
+    const seed = returning.slackChannelId && zapChannel && zapChannel !== returning.slackChannelId
+      ? { zap_created_channel_id: zapChannel }
+      : null;
+    const result = await createRun({
+      recipe: 'full_onboarding',
+      input: body,
+      preset: { slack_channel_id: ch, drive_root_folder_id: returning.driveFolderId, client_profile_json: seed },
+    });
+    console.log(
+      `[webhook] intake -> run ${result.runId} (${result.queued.length} steps queued` +
+        `${ch ? `, channel=${ch}` : ''}${returning.saidExisting ? ', returning client' : ''}` +
+        `${returning.driveFolderId ? `, drive=${returning.driveFolderId}` : ''})`,
+    );
+    return res.status(202).json({ accepted: true, runId: result.runId, slackChannel: ch, returningClient: returning.saidExisting });
   } catch (err) {
     return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

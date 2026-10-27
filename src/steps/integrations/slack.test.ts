@@ -136,3 +136,81 @@ describe('buildWave1Content - the client dashboard line', () => {
     expect(absent.dashboardLine).toBe('');
   });
 });
+
+describe('buildWave1Content - returning clients', () => {
+  const OLD_CHANNEL = 'C0A74B923P0';
+  const OLD_FOLDER = '1BXEVtSSsbqJFf4SIRAGjR25OP8yKzRz2';
+  const rows = (over: Record<string, any> = {}) =>
+    new Map<string, any>(Object.entries({
+      'slack.create_channel': { status: 'succeeded' },
+      'drive.create_folders': { status: 'succeeded', output_json: { reused: true, root_folder_id: OLD_FOLDER, folder_name: 'Venice Kim- O Wellness' } },
+      ...over,
+    }));
+  const returningRun = (profile: Record<string, any> = {}) => ({
+    id: 'run-9',
+    client_name: 'O Aesthetics & Wellness',
+    slack_channel_id: OLD_CHANNEL,
+    drive_root_folder_id: OLD_FOLDER,
+    client_profile_json: {
+      existing_client: 'Yes',
+      existing_slack_channel_link: `https://medicalmarketingwhiz1.slack.com/archives/${OLD_CHANNEL}`,
+      existing_drive_folder_link: `https://drive.google.com/drive/folders/${OLD_FOLDER}`,
+      ...profile,
+    },
+  });
+
+  it('adds nothing for an ordinary new client', () => {
+    const c = buildWave1Content({ id: 'run-1', client_name: 'Coastal Aesthetics', slack_channel_id: 'C999', client_profile_json: {} }, rows({ 'drive.create_folders': { status: 'succeeded', output_json: {} } }), true);
+    expect(c.returningLines).toEqual([]);
+    expect(c.assetLines[0]).toContain('this channel');
+    expect(c.assetLines[0]).not.toContain('reused');
+  });
+
+  it('says what it reused when the form gave both links', () => {
+    const c = buildWave1Content(returningRun(), rows(), true);
+    const text = c.returningLines.join('\n');
+    expect(c.returningLines[0]).toBe('⚠️  *Returning client*');
+    expect(text).toContain('existing MMW client');
+    expect(text).toContain('Reused the existing Slack channel');
+    expect(text).toContain('Reused the existing Google Drive folder "Venice Kim- O Wellness"');
+    expect(text).not.toContain('No existing');
+    expect(c.assetLines.join('\n')).toContain('this channel (existing, reused)');
+    expect(c.assetLines.join('\n')).toContain('Open existing Drive folder');
+  });
+
+  it('names the extra channel Zapier made, so it can be archived', () => {
+    const c = buildWave1Content(returningRun({ zap_created_channel_id: 'C0CANTAD77S' }), rows(), true);
+    expect(c.returningLines.join('\n')).toContain('Zapier also created a new channel (<#C0CANTAD77S>)');
+  });
+
+  it('warns when a returning client gave no links, or ones it could not read', () => {
+    const noLinks = buildWave1Content(
+      { id: 'run-9', client_name: 'O Aesthetics & Wellness', slack_channel_id: 'C0CANTAD77S', client_profile_json: { existing_client: 'yes' } },
+      rows({ 'drive.create_folders': { status: 'succeeded', output_json: {} } }),
+      true,
+    );
+    const text = noLinks.returningLines.join('\n');
+    expect(text).toContain('No existing Slack channel link was given');
+    expect(text).toContain('No existing Drive folder link was given');
+
+    const badLink = buildWave1Content(
+      { ...returningRun({ existing_slack_channel_link: '#candela--venice-kim' }), slack_channel_id: 'C0CANTAD77S' },
+      rows(),
+      true,
+    );
+    expect(badLink.returningLines.join('\n')).toContain(`Couldn't read the Slack channel answer "#candela--venice-kim"`);
+  });
+
+  it('flags a possible returning client from an earlier run even when the form said nothing', () => {
+    const c = buildWave1Content(
+      { id: 'run-10', client_name: 'O Aesthetics & Wellness', slack_channel_id: 'C123NEWONE', client_profile_json: {} },
+      rows({ 'drive.create_folders': { status: 'succeeded', output_json: {} } }),
+      true,
+      { id: 'f3c85f4a', client_name: 'O Aesthetics & Wellness', created_at: '2026-10-16T13:36:24+00:00', website_url: null },
+    );
+    const text = c.returningLines.join('\n');
+    expect(c.returningLines[0]).toBe('⚠️  *Possible returning client*');
+    expect(text).toContain('on 2026-10-16 (run `f3c85f4a`)');
+    expect(text).toContain('did NOT mark it as existing');
+  });
+});

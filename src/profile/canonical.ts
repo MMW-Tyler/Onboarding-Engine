@@ -61,11 +61,25 @@ export const INTAKE_KEYS: CanonicalKey[] = [
   { key: 'website_build_notes', description: 'Website build notes' },
   { key: 'website_build_type', description: 'Website build type' },
   { key: 'submitted_at', description: 'Form submission timestamp' },
+  // Returning-client questions (2026-10-27). A client coming back, or a device
+  // client moving up to a full program, already has a Slack channel and a Drive
+  // folder; these answers let the run reuse them instead of making duplicates.
+  // lib/returning.ts reads them, in the webhook and in the roll-up.
+  { key: 'existing_client', description: 'Whether this is an existing / returning MMW client (yes/no)' },
+  { key: 'existing_slack_channel_link', description: "Link to the client's existing Slack channel" },
+  { key: 'existing_drive_folder_link', description: "Link to the client's existing Google Drive folder" },
 ];
 
 // Ordered deterministic rules. First match wins, so more-specific patterns lead.
 const INTAKE_RULES: [RegExp, string][] = [
   [/timestamp/, 'submitted_at'],
+  // The returning-client questions lead because their labels can contain words
+  // later rules claim ("Existing Slack channel URL" would otherwise land in
+  // website_url). Zapier's own "slack_channel_id" field is deliberately NOT
+  // matched: that is the channel the zap just created, not an existing one.
+  [/(existing|current|previous|returning).*slack|slack.*(link|url)/, 'existing_slack_channel_link'],
+  [/(existing|current|previous|returning).*(drive|folder)|drive folder|google drive/, 'existing_drive_folder_link'],
+  [/(existing|current|previous|returning|prior).*(client|customer)|already.*(client|customer)/, 'existing_client'],
   [/website build type/, 'website_build_type'],
   [/website build/, 'website_build_notes'],
   [/website|url/, 'website_url'],
@@ -79,6 +93,12 @@ const INTAKE_RULES: [RegExp, string][] = [
   [/office phone|phone number|phone/, 'nap_phone'],
   [/street address|street|address/, 'nap_street'],
   [/mmw package|package/, 'package'],
+  // Specialty BEFORE special additions: "client specialty" contains "special",
+  // so the looser special-additions rule used to claim it. Every run stored the
+  // specialty as the special additions and then dropped the real special
+  // additions as a duplicate (O Aesthetics & Wellness lost "also do jumpstart
+  // program for her for candela" this way).
+  [/client specialty|specialty/, 'client_specialty'],
   [/special additions|things promised|special/, 'special_additions'],
   [/length of contract|contract/, 'contract_length'],
   [/start date/, 'start_date'],
@@ -86,7 +106,6 @@ const INTAKE_RULES: [RegExp, string][] = [
   [/city/, 'nap_city'],
   [/state/, 'nap_state'],
   [/book to mail/, 'book_to_mail'],
-  [/client specialty|specialty/, 'client_specialty'],
   [/invoice/, 'invoice_amount'],
 ];
 

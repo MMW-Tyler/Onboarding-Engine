@@ -369,6 +369,53 @@ with the URL sees that client's portal.
 - An answer with no address at all is dropped from the profile rather than
   stored, same as a junk website answer, and logged.
 
+## Returning clients (2026-10-27)
+
+- **What went wrong:** O Aesthetics & Wellness (Venice Kim) was a Candela
+  device client, then a website client, then signed Whiz Launch on 2026-10-16.
+  The intake run made a third Slack channel and a second Drive folder, and the
+  team ended up split across `#candela--venice-kim`, `#o-aesthetics-and-wellness`
+  and the new `#o-aesthetics-_-wellness`. **The new channel was made by the
+  Zapier intake zap, not the engine** (the engine only used the id it was
+  handed), so the zap has to change too; the engine alone can't stop it.
+- **New Sales Intake questions**, mapped first in `INTAKE_RULES` so their labels
+  can't be claimed by the website rule: "Is this an existing MMW client?"
+  (`existing_client`), "Existing Slack channel link" (`existing_slack_channel_link`),
+  "Existing Google Drive folder link" (`existing_drive_folder_link`). They must be
+  added to the zap's hand-mapped webhook data like every other field. Reps paste
+  the channel's **Copy link** URL, which carries the channel id; a channel NAME
+  can't be resolved, because older client channels are private and the bot
+  isn't in them. `lib/returning.ts` parses all of it.
+- **The webhook** (`/webhook/intake`) presets the run at insert time
+  (`createRun({ preset })`): `slack_channel_id` = the existing channel, else the
+  zap's channel; `drive_root_folder_id` = the existing folder. If the zap still
+  made a new channel for a returning client, its id is kept as
+  `client_profile_json.zap_created_channel_id` so the roll-up can say "archive it".
+- **`slack.create_channel`** on a preset channel now calls `conversations.info`
+  and FLAGS with "invite @WhizHQ, then retry" when the bot isn't a member or the
+  channel is archived. Before, a private channel failed silently later (roll-up,
+  WhizHQ posts, onboarding form delivery).
+- **`drive.create_folders`** reuses `drive_root_folder_id` when it's set, adding
+  nothing to it. If the service account can't see it, it flags with "share it
+  with <SA email>" and does NOT fall back to creating a folder (that is the
+  duplicate this exists to prevent). This also makes a re-run stop creating a
+  second folder, which `rerunRun`'s comment had always claimed.
+- **The roll-up** gets a "Returning client" block under its intro when the form
+  says so, links were given, or an earlier LIVE `full_onboarding` run matches the
+  website or practice name. **HubSpot "company already existed" is deliberately
+  not a signal**: sales creates the company before the deal closes, so it was
+  true on 11 of the last 15 live runs, nearly all new clients.
+- Still created for a returning client, on purpose: ClickUp folder + tracker row
+  (program work), GHL / domain / email stack (only if they never had one; there
+  is no "existing GHL" question yet), WhizHQ client (no lookup endpoint exists).
+  The roll-up tells the team to link the ClickUp folder to older records and to
+  check WhizHQ for an older client.
+- **Specialty bug, fixed the same day:** the special-additions rule
+  (`/special/`) used to claim "Client Specialty", so every run stored the
+  specialty as `special_additions`, dropped the real special additions as a
+  duplicate, and left `client_specialty` (and the `focus_services` fallback)
+  empty. The specialty rule now comes first.
+
 ## Why platform detection kept coming back "unknown" (2026-08-12)
 
 - **The main bug: `crawl.detect_platform` read `ctx.run.domain` first.** It and
