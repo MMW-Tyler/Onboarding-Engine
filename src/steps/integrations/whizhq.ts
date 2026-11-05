@@ -5,6 +5,7 @@ import { profileOf, siblingOutput, simId, simulated } from './util.js';
 import { clientSiteHost } from './crawl.js';
 import { packageKeyOf } from '../../lib/packages.js';
 import { slackPost } from './slack.js';
+import { parseDateMs } from './clickup.js';
 import {
   bootstrapFinished,
   classifyWhizError,
@@ -136,7 +137,29 @@ async function onboardBody(ctx: StepContext): Promise<WhizOnboardRequest> {
   const ae = config.whizhq.aeEmail();
   if (ae) body.ae_email = ae;
 
+  // WhizHQ's Onboarding Manager takes over the checklist from here: the list
+  // this run copied, plus what it reads the checklist against. The step waits
+  // for clickup.onboarding_list and hubspot.upsert (softDependsOn), so their
+  // outputs are final by now.
+  Object.assign(body, await managerFields(ctx));
+
   return body;
+}
+
+/** Hand-off fields for WhizHQ's Onboarding Manager. All optional. */
+async function managerFields(ctx: StepContext): Promise<Partial<WhizOnboardRequest>> {
+  const out: Partial<WhizOnboardRequest> = { engine_run_id: String(ctx.run.id) };
+  const p = profileOf(ctx.run);
+  const list = await siblingOutput(ctx.run.id, 'clickup.onboarding_list');
+  const listId = list?.status === 'succeeded' ? (list.output?.list_id as string | undefined) : undefined;
+  if (listId) out.clickup_onboarding_list_id = String(listId);
+  const company = (ctx.run.hubspot_company_id as string | undefined)?.trim();
+  if (company) out.hubspot_company_id = company;
+  const pkg = (p.package as string | undefined) ?? (ctx.run.package as string | undefined);
+  if (pkg) out.sales_program = String(pkg);
+  const start = p.start_date ? parseDateMs(String(p.start_date)) : undefined;
+  if (start !== undefined) out.start_date = new Date(start).toISOString().slice(0, 10);
+  return out;
 }
 
 async function createClientReal(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -537,7 +560,9 @@ export const whizhqSteps: Step[] = [
     wave: 1,
     safetyClass: 'reversible-write',
     dependsOn: ['profile.normalize_intake'],
-    softDependsOn: ['slack.create_channel'],
+    // Ordering only: the hand-off carries the channel, the HubSpot company and
+    // the onboarding checklist list to WhizHQ, so it goes after them.
+    softDependsOn: ['slack.create_channel', 'hubspot.upsert', 'clickup.onboarding_list'],
     // Deliberately 1. Every failure mode here is either pointless to retry
     // (401/400/404) or ambiguous about whether a client was created (5xx,
     // timeout) - and WhizHQ has no uniqueness constraint to save us from a

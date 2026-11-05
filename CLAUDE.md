@@ -37,7 +37,14 @@ Three separate ClickUp things get created per Wave 1 run - don't confuse them:
    ClickUp's public API has **no duplicate-list endpoint** and the sample is not
    saved as a list template, so the step creates an empty list in the folder and
    re-creates every source task in it (name, description, status, priority,
-   tags, dates, `Assigned Role`, and subtask parents). It paces writes at
+   tags, dates, `Assigned Role`, subtask parents, checklists, and the
+   dependencies between tasks). Each source task is read on its own
+   (`GET /task/{id}?include_markdown_description=true`) because the list
+   endpoint returns neither descriptions nor dependencies: before 2026-11-05
+   every copy lost its SOP links, the 0.10 checklist and all 18 dependencies.
+   Descriptions are written as plain text with every link target spelled out
+   ("Billing Sheet (https://...)"), so links survive without relying on a
+   markdown write field. Checklist and dependency writes are fail-soft. It paces writes at
    ~700 ms to stay under ClickUp's 100 req/min limit, so a full copy of the ~73
    sample tasks takes about a minute. It is resume-safe: a same-named list in
    the folder is reused and tasks already there (matched by name) are skipped,
@@ -45,9 +52,14 @@ Three separate ClickUp things get created per Wave 1 run - don't confuse them:
    Which list a run copies is decided by `sampleListIdFor` in
    `steps/integrations/clickup.ts`: Practice Pro ->
    `CLICKUP_PRACTICE_PRO_LIST_ID` (defaulted to `901711324840`), Whiz Launch ->
-   `CLICKUP_WHIZ_LAUNCH_LIST_ID` (**no default — the list does not exist in
-   ClickUp yet**, so Whiz Launch runs report `skipped` until someone builds it
-   and sets the id). Smart Start / Whiz Works have no sample list either. The
+   `CLICKUP_WHIZ_LAUNCH_LIST_ID` (no default: its sample list
+   `1600320000016689`, "Whiz Launch - Onboarding Sample (DRAFT, verify against
+   agreement)", waits on a check against the Whiz Launch agreement; set the id
+   in Render to turn it on), Smart Start -> `CLICKUP_SMART_START_LIST_ID`
+   (defaulted to `1600320000016613`), Whiz Works -> `CLICKUP_WHIZ_WORKS_LIST_ID`
+   (defaulted to `1600320000016666`). The three samples were built 2026-11-05 from
+   WhizHQ's Onboarding Manager playbooks (core/onboarding-manager/ in
+   mmw-platform), which mirror them task for task. The
    folder is overridable via `CLICKUP_ONBOARDING_FOLDER_ID`.
 3. **`clickup.master_tracker`** — the row in the Master Account Tracker list
    (`CLICKUP_MASTER_TRACKER_LIST_ID`). The task name is **just the client name**
@@ -186,6 +198,13 @@ HTTP. Three steps, all in `full_onboarding`:
 `slack.wave1_rollup` posts the dashboard link as its own line near the top. It is
 client-facing: the Slack channels are internal so posting it is fine, but anyone
 with the URL sees that client's portal.
+
+4. **Onboarding Manager hand-off.** `whizhq.create_client` also sends
+   `clickup_onboarding_list_id`, `engine_run_id`, `hubspot_company_id`,
+   `sales_program` and `start_date`, so WhizHQ's Onboarding Manager manages
+   the new checklist from day one. It waits (softDependsOn, ordering only) for
+   `clickup.onboarding_list` and `hubspot.upsert` so those are final. An older
+   WhizHQ ignores the extra fields.
 
 ### Things that will bite you if you change this
 

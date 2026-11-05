@@ -70,6 +70,10 @@ function sampleListIdFor(run: OnboardingRun): string {
       return config.clickup.practiceProListId().trim();
     case 'whiz_launch':
       return config.clickup.whizLaunchListId().trim();
+    case 'smart_start':
+      return config.clickup.smartStartListId().trim();
+    case 'whiz_works':
+      return config.clickup.whizWorksListId().trim();
     default:
       return '';
   }
@@ -215,6 +219,11 @@ interface CuTask {
   time_estimate?: number | null;
   parent?: string | null;
   custom_fields?: CuTaskField[];
+  /** On a single-task GET: every dependency this task is part of, either side. */
+  dependencies?: { task_id?: string; depends_on?: string }[];
+  /** On a single-task GET with include_markdown_description=true. */
+  markdown_description?: string;
+  checklists?: { name?: string; items?: { name?: string; orderindex?: number }[] }[];
 }
 
 const PRIORITY_IDS: Record<string, number> = { urgent: 1, high: 2, normal: 3, low: 4 };
@@ -238,10 +247,10 @@ async function listFields(ctx: StepContext, listId: string): Promise<CuField[]> 
 }
 
 /** Every task in a list, including subtasks and closed ones. */
-async function listTasks(ctx: StepContext, listId: string): Promise<CuTask[]> {
+async function listTasks(ctx: StepContext, listId: string, { markdown = false } = {}): Promise<CuTask[]> {
   const out: CuTask[] = [];
   for (let page = 0; page < 20; page++) {
-    const url = `${CU}/list/${listId}/task?subtasks=true&include_closed=true&page=${page}`;
+    const url = `${CU}/list/${listId}/task?subtasks=true&include_closed=true&page=${page}${markdown ? '&include_markdown_description=true' : ''}`;
     const res = await callApi<any>(ctx, url, 'clickup.list.tasks', { headers: authHeader() });
     const tasks = (res.body?.tasks ?? []) as CuTask[];
     out.push(...tasks);
@@ -273,9 +282,12 @@ function copyCustomFields(source: CuTask, targetFields: Map<string, CuField>): {
   return out;
 }
 
-function copyTaskBody(source: CuTask, targetFields: Map<string, CuField>, statuses: Set<string>): Record<string, unknown> {
+export function copyTaskBody(source: CuTask, targetFields: Map<string, CuField>, statuses: Set<string>): Record<string, unknown> {
   const body: Record<string, unknown> = { name: source.name };
-  const description = source.description ?? source.text_content ?? '';
+  // From the full task (see withDetail). Plain text drops link targets ("Billing
+  // Sheet:" with no sheet), so the markdown is flattened with every URL written
+  // out; ClickUp makes bare URLs clickable.
+  const description = descriptionFor(source);
   if (description) body.description = description;
   // Only send a status the new list actually has - otherwise ClickUp rejects
   // the whole create. Without one the task lands in the list's first status.
@@ -293,6 +305,96 @@ function copyTaskBody(source: CuTask, targetFields: Map<string, CuField>, status
   const fields = copyCustomFields(source, targetFields);
   if (fields.length > 0) body.custom_fields = fields;
   return body;
+}
+
+/**
+ * Markdown to plain text that keeps link targets: "[Billing Sheet](https://x)"
+ * becomes "Billing Sheet (https://x)", a bare link stays a link, emphasis
+ * markers go. Lists and line breaks are kept as written.
+ */
+export function markdownToPlain(md: string): string {
+  return md
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt: string, url: string) => (alt ? `${alt} (${url})` : url))
+    .replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, text: string, url: string) => (text.trim() === url.trim() ? url : `${text} (${url})`))
+    .replace(/<(https?:[^>]+)>/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, '$1$2')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\\([\\`*_{}\[\]()#+\-.!])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** The description to write on a copy: markdown with links, else plain text. */
+export function descriptionFor(t: CuTask): string {
+  if (t.markdown_description && t.markdown_description.trim()) return markdownToPlain(t.markdown_description);
+  return (t.text_content || t.description || '').trim();
+}
+
+/** Whether a task from the list endpoint lacks what the copy needs. */
+export function needsDetail(t: CuTask): boolean {
+  if (t.dependencies === undefined || t.checklists === undefined) return true;
+  const hasText = Boolean((t.description || t.text_content || '').trim());
+  return hasText && t.markdown_description === undefined;
+}
+
+/**
+ * Descriptions with their links, dependencies and checklists. The list endpoint
+ * is asked for them first (include_markdown_description); a task it returns
+ * without them is read on its own. Reads are paced to ClickUp's 100 requests a
+ * minute, because the copy that follows is a long burst of writes under the
+ * same limit and the whole step must stay well inside the engine's 5-minute
+ * job claim.
+ */
+async function withDetail(ctx: StepContext, tasks: CuTask[]): Promise<CuTask[]> {
+  const out: CuTask[] = [];
+  for (const t of tasks) {
+    if (!needsDetail(t)) {
+      out.push(t);
+      continue;
+    }
+    try {
+      const res = await callApi<any>(ctx, `${CU}/task/${t.id}?include_markdown_description=true`, 'clickup.task.get', { headers: authHeader() });
+      const full = (res.body ?? {}) as CuTask;
+      out.push({
+        ...t,
+        description: full.description ?? t.description,
+        text_content: full.text_content ?? t.text_content,
+        markdown_description: full.markdown_description ?? undefined,
+        dependencies: full.dependencies ?? [],
+        checklists: full.checklists ?? [],
+      });
+    } catch {
+      out.push(t); // a task we cannot read in full is still copied by name
+    }
+    await sleep(600);
+  }
+  return out;
+}
+
+/**
+ * Dependency edges to re-create on the copy, as [waits, onTask] pairs of NEW
+ * task ids. A dependency appears on both of its tasks, so only the side where
+ * the task itself is the one waiting (task_id) is read, and pairs are
+ * de-duplicated. Edges to tasks outside the sample list are dropped.
+ */
+export function dependencyEdges(source: CuTask[], newIdOf: Map<string, string>): [string, string][] {
+  const ids = new Set(source.map((t) => t.id));
+  const seen = new Set<string>();
+  const edges: [string, string][] = [];
+  for (const t of source) {
+    for (const d of t.dependencies ?? []) {
+      if (d.task_id !== t.id || !d.depends_on || !ids.has(d.depends_on)) continue;
+      const waits = newIdOf.get(t.id);
+      const on = newIdOf.get(d.depends_on);
+      if (!waits || !on || waits === on) continue;
+      const key = `${waits}>${on}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push([waits, on]);
+    }
+  }
+  return edges;
 }
 
 async function onboardingListReal(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -321,13 +423,17 @@ async function onboardingListReal(ctx: StepContext): Promise<Record<string, unkn
   const statuses = new Set(statusNames.map((s) => s.toLowerCase()));
 
   // 2. Copy the sample list's tasks in, skipping any already there by name.
-  const [source, already, targetFieldList] = await Promise.all([
-    listTasks(ctx, sourceListId),
+  const [sourceSummary, already, targetFieldList] = await Promise.all([
+    listTasks(ctx, sourceListId, { markdown: true }),
     reused ? listTasks(ctx, listId) : Promise.resolve([] as CuTask[]),
     listFields(ctx, listId),
   ]);
+  const source = await withDetail(ctx, sourceSummary);
   const targetFields = new Map(targetFieldList.map((f) => [f.id, f]));
   const nameKey = (t: CuTask) => t.name.trim().toLowerCase();
+  // source task id -> its copy's id, for dependencies. Filled as tasks are
+  // created, and from same-named tasks already in a reused list.
+  const newIdOf = new Map<string, string>();
 
   // Tasks the target list already has, counted by name so a sample list with
   // two identically named tasks still ends up with two copies.
@@ -345,6 +451,7 @@ async function onboardingListReal(ctx: StepContext): Promise<Record<string, unkn
 
   let created = 0;
   let skipped = 0;
+  let checklistsCopied = 0;
   const orphaned: string[] = [];
   for (const t of [...parents, ...children]) {
     const key = nameKey(t);
@@ -352,6 +459,8 @@ async function onboardingListReal(ctx: StepContext): Promise<Record<string, unkn
     if (pending > 0) {
       alreadyByName.set(key, pending - 1);
       skipped += 1;
+      const existingId = idMap.get(key);
+      if (existingId) newIdOf.set(t.id, existingId);
       continue;
     }
     const body = copyTaskBody(t, targetFields, statuses);
@@ -368,8 +477,58 @@ async function onboardingListReal(ctx: StepContext): Promise<Record<string, unkn
     });
     const newId = res.body?.id as string | undefined;
     if (newId && !idMap.has(key)) idMap.set(key, newId);
+    if (newId) newIdOf.set(t.id, newId);
     created += 1;
     await sleepBetweenWrites();
+    // Checklists (the 0.10 Phase 0 QA list). Fail-soft: a missing checklist
+    // must not fail the copy.
+    if (newId) {
+      for (const cl of t.checklists ?? []) {
+        const items = (cl.items ?? []).filter((i) => (i.name ?? '').trim());
+        if (!items.length) continue;
+        try {
+          const made = await callApi<any>(ctx, `${CU}/task/${newId}/checklist`, 'clickup.checklist.create', {
+            method: 'POST', headers: authHeader(), json: { name: cl.name || 'Checklist' },
+          });
+          const checklistId = made.body?.checklist?.id as string | undefined;
+          await sleepBetweenWrites();
+          if (!checklistId) continue;
+          for (const item of [...items].sort((a, b) => (a.orderindex ?? 0) - (b.orderindex ?? 0))) {
+            await callApi<any>(ctx, `${CU}/checklist/${checklistId}/checklist_item`, 'clickup.checklist.item', {
+              method: 'POST', headers: authHeader(), json: { name: item.name },
+            });
+            await sleepBetweenWrites();
+          }
+          checklistsCopied += 1;
+        } catch (err) {
+          await ctx.logEvent({ level: 'warn', endpoint: 'clickup.onboarding_list', response_body: { reason: 'checklist not copied', task: t.name, error: err instanceof Error ? err.message : String(err) } });
+        }
+      }
+    }
+  }
+
+  // 3. Re-create the sample's dependencies ("0.3 waits on 0.1") between the
+  //    copies. Fail-soft per edge: an edge that already exists (a resumed copy)
+  //    or is refused must not fail the checklist.
+  let dependenciesCreated = 0;
+  const dependencyErrors: string[] = [];
+  for (const [waits, on] of dependencyEdges(source, newIdOf)) {
+    try {
+      await callApi<any>(ctx, `${CU}/task/${waits}/dependency`, 'clickup.task.dependency', {
+        method: 'POST', headers: authHeader(), json: { depends_on: on },
+      });
+      dependenciesCreated += 1;
+    } catch (err) {
+      dependencyErrors.push(err instanceof Error ? err.message : String(err));
+    }
+    await sleepBetweenWrites();
+  }
+  if (dependencyErrors.length > 0) {
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'clickup.onboarding_list',
+      response_body: { reason: 'some dependencies were not re-created', count: dependencyErrors.length, first: dependencyErrors.slice(0, 3) },
+    });
   }
 
   if (orphaned.length > 0) {
@@ -390,6 +549,9 @@ async function onboardingListReal(ctx: StepContext): Promise<Record<string, unkn
     tasks_created: created,
     tasks_skipped: skipped,
     source_task_count: source.length,
+    descriptions_copied: source.filter((t) => descriptionFor(t)).length,
+    checklists_copied: checklistsCopied,
+    dependencies_created: dependenciesCreated,
   };
 }
 

@@ -134,6 +134,13 @@ export interface WhizOnboardRequest {
   program?: string | null;
   slack_channel?: string;
   ae_email?: string;
+  // WhizHQ's Onboarding Manager: which checklist to manage, and what to read it
+  // against. All optional; an older WhizHQ ignores them.
+  clickup_onboarding_list_id?: string;
+  engine_run_id?: string;
+  hubspot_company_id?: string;
+  sales_program?: string;
+  start_date?: string;
 }
 
 /**

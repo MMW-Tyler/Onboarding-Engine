@@ -75,6 +75,11 @@ export const config = {
     // No default: the "Whiz Launch - Onboarding Sample" list does not exist in
     // ClickUp yet. Set CLICKUP_WHIZ_LAUNCH_LIST_ID in Render once it does.
     whizLaunchListId: () => optional('CLICKUP_WHIZ_LAUNCH_LIST_ID'),
+    // Smart Start and Whiz Works checklists ("<Program> - Onboarding Sample" in
+    // the New Client Onboarding folder). Unset = that program's runs skip the
+    // checklist copy, as before.
+    smartStartListId: () => optional('CLICKUP_SMART_START_LIST_ID', '1600320000016613'),
+    whizWorksListId: () => optional('CLICKUP_WHIZ_WORKS_LIST_ID', '1600320000016666'),
   },
   drive: {
     saJson: () => required('GDRIVE_SA_JSON'),
