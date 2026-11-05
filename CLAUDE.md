@@ -416,6 +416,30 @@ with the URL sees that client's portal.
   duplicate, and left `client_specialty` (and the `focus_services` fallback)
   empty. The specialty rule now comes first.
 
+## DMARC on the purchased domain (2026-11-05)
+
+- **What went wrong:** Dermagnify's first website lead alert (Netlify -> GHL ->
+  Mailgun, From `notifications@dermagnifypx.com`) passed SPF and DKIM for
+  `mg.dermagnifypx.com` but Gmail showed DMARC FAIL and filed it as spam. The
+  engine wrote the Mailgun records and the GHL `go` CNAME, but no DMARC record.
+- **`dns.mailgun_records` now also writes `_dmarc.<domain>` TXT
+  `v=DMARC1; p=none;`** in the same getHosts/setHosts merge. One record on the
+  purchased domain covers From addresses at both `<domain>` and `mg.<domain>`
+  (receivers fall back to the org domain's record, and Mailgun's DKIM
+  `d=mg.<domain>` aligns under relaxed alignment). `p=none` = monitor only.
+  No `rua=`: nobody reads the reports, the domain has no inbox, and a report
+  address on another domain needs an extra authorization record per client.
+- **It is add-if-absent, unlike the Mailgun records (which replace).** A
+  `_dmarc` TXT the domain already has is never changed, and a second one is
+  never added: two DMARC records = no policy. A junk or duplicate `_dmarc`
+  record is left alone but reported as a warn and on the roll-up's DNS line.
+- `DNS_DMARC_VALUE` (not set in Render) overrides the value for new runs; an
+  invalid one falls back to the default with a warn.
+- **Backfill for older clients:** retry just that step on their run
+  (`POST /runs/:id/steps/dns.mailgun_records/retry`, or the step's retry button).
+  It re-applies the stored Mailgun records unchanged, adds `_dmarc` if missing,
+  and promotes no downstream steps (they are already terminal).
+
 ## Why platform detection kept coming back "unknown" (2026-08-12)
 
 - **The main bug: `crawl.detect_platform` read `ctx.run.domain` first.** It and
@@ -488,5 +512,6 @@ NOT set, relying on code defaults (do not assume these exist):
 - `CLICKUP_PRACTICE_PRO_LIST_ID` -> defaults `901711324840` ("Practice Pro -
   Onboarding Sample" list).
 - `NAMECHEAP_REGISTRANT_COUNTRY` -> defaults `US`.
+- `DNS_DMARC_VALUE` -> defaults `v=DMARC1; p=none;` (see "DMARC" above).
 - `GHL_BRANDED_DNS_HOST` / `_TYPE` / `_TARGET` -> default `go` / `CNAME` /
   `brand.ludicrous.cloud` (the MMW standard GHL branded-domain CNAME).

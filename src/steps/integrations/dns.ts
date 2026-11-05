@@ -22,13 +22,25 @@ import type { MailgunDnsRecord } from './mailgun.js';
  * The Mailgun records are NOT hardcoded: mailgun.add_domain stores the real
  * records (incl. the actual DKIM key) Mailgun returned on the run, and
  * dns.mailgun_records translates those into Namecheap host records.
+ *
+ * dns.mailgun_records also publishes DMARC at _dmarc.<domain> (2026-11-05).
+ * Without it, client mail passed SPF and DKIM for mg.<domain> and still landed
+ * in spam with Gmail showing "DMARC: FAIL" (Dermagnify's first lead alert);
+ * Google and Yahoo expect DMARC from senders. One record on the purchased domain
+ * covers mail From: anything@<domain> AND anything@mg.<domain>, because a
+ * receiver that finds no _dmarc.mg.<domain> falls back to the organizational
+ * domain's record, and Mailgun's DKIM d=mg.<domain> aligns with a From of
+ * <domain> under DMARC's default relaxed alignment. Unlike the Mailgun records
+ * it is add-if-absent: a _dmarc record the domain already has (one added by
+ * hand, or a policy someone tightened) is never replaced, and a second one is
+ * never added, since two DMARC records means no policy at all.
  */
 
 // ---------------------------------------------------------------------------
 // Record types
 // ---------------------------------------------------------------------------
 
-interface DnsRecord {
+export interface DnsRecord {
   Type: string; // A | AAAA | CNAME | TXT | MX | URL | URL301 | FRAME | NS ...
   Host: string;
   Address: string;
@@ -148,12 +160,47 @@ function mailgunToDns(rec: MailgunDnsRecord, domain: string): DnsRecord {
   };
 }
 
+const keyOf = (r: DnsRecord) => `${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`;
+
+export interface MergedHosts {
+  /** The full record set to setHosts. */
+  merged: DnsRecord[];
+  /** Existing records left exactly as they were. */
+  kept: DnsRecord[];
+  /** Records this write adds or replaces. */
+  written: DnsRecord[];
+  /** Existing records an add-if-absent record yielded to (a subset of kept). */
+  deferred: DnsRecord[];
+}
+
+/**
+ * The merge behind applyRecords. `replace` records win: any existing record
+ * with the same Host+Type is dropped. `addIfAbsent` records only go in when the
+ * domain has no record at that Host+Type yet; if it has one, that one stays and
+ * is reported in `deferred`. Host matching ignores case, as DNS does.
+ */
+export function mergeHosts(existing: DnsRecord[], replace: DnsRecord[], addIfAbsent: DnsRecord[] = []): MergedHosts {
+  const replaceKeys = new Set(replace.map(keyOf));
+  const existingKeys = new Set(existing.map(keyOf));
+  const optionalKeys = new Set(addIfAbsent.map(keyOf));
+  const kept = existing.filter((r) => !replaceKeys.has(keyOf(r)));
+  const fresh = addIfAbsent.filter((r) => !existingKeys.has(keyOf(r)) && !replaceKeys.has(keyOf(r)));
+  const written = [...replace, ...fresh];
+  const deferred = kept.filter((r) => optionalKeys.has(keyOf(r)));
+  return { merged: [...kept, ...written], kept, written, deferred };
+}
+
 /**
  * Apply records to the domain without clobbering unrelated host records:
- * read current hosts, drop any with the same Host+Type as an incoming record,
- * then setHosts the union.
+ * read current hosts, merge (see mergeHosts), then setHosts the union.
  */
-async function applyRecords(ctx: StepContext, domain: string, incoming: DnsRecord[], type: string): Promise<Record<string, unknown>> {
+async function applyRecords(
+  ctx: StepContext,
+  domain: string,
+  incoming: DnsRecord[],
+  type: string,
+  addIfAbsent: DnsRecord[] = [],
+): Promise<{ summary: Record<string, unknown>; deferred: DnsRecord[] }> {
   const getRes = await callApi(ctx, getHostsUrl(domain), 'namecheap.domains.dns.getHosts');
   const getXml = unwrapRelayXml(getRes.raw);
   if (!parseApiStatus(getXml)) {
@@ -161,9 +208,7 @@ async function applyRecords(ctx: StepContext, domain: string, incoming: DnsRecor
   }
   const existing = parseHosts(getXml);
 
-  const incomingKeys = new Set(incoming.map((r) => `${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
-  const kept = existing.filter((r) => !incomingKeys.has(`${r.Host.toLowerCase()}|${r.Type.toUpperCase()}`));
-  const merged = [...kept, ...incoming];
+  const { merged, kept, written, deferred } = mergeHosts(existing, incoming, addIfAbsent);
 
   const setRes = await callApi(ctx, setHostsUrl(domain, merged), 'namecheap.domains.dns.setHosts');
   const setXml = unwrapRelayXml(setRes.raw);
@@ -171,7 +216,7 @@ async function applyRecords(ctx: StepContext, domain: string, incoming: DnsRecor
     throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${parseApiError(setXml) ?? 'unknown error'}`);
   }
 
-  return { domain, type, added: incoming.length, kept: kept.length, total: merged.length };
+  return { summary: { domain, type, added: written.length, kept: kept.length, total: merged.length }, deferred };
 }
 
 function requireDomain(ctx: StepContext): string {
@@ -207,7 +252,14 @@ async function mailgunDnsReal(ctx: StepContext): Promise<Record<string, unknown>
   if (records.length === 0) {
     throw new Error('dns.mailgun_records: no Mailgun records on the run - mailgun.add_domain must run (live) first');
   }
-  return applyRecords(ctx, domain, records, 'mailgun');
+  const dmarc = dmarcRecord();
+  if (dmarc.warning) await ctx.logEvent({ level: 'warn', endpoint: 'dns.dmarc', response_body: { warning: dmarc.warning } });
+
+  const { summary, deferred } = await applyRecords(ctx, domain, records, 'mailgun', [dmarc.record]);
+
+  const outcome = dmarcOutcome(domain, dmarc.record, deferred);
+  if (outcome.warning) await ctx.logEvent({ level: 'warn', endpoint: 'dns.dmarc', response_body: outcome });
+  return { ...summary, dmarc: outcome };
 }
 
 async function mailgunDnsDry(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -215,8 +267,92 @@ async function mailgunDnsDry(ctx: StepContext): Promise<Record<string, unknown>>
   // Prefer real records if mailgun already ran; else show the structural shape.
   const real = mailgunRecordsFromRun(ctx, domain);
   const records = real.length ? real : MAILGUN_PLACEHOLDER;
-  await ctx.logEvent({ level: 'info', endpoint: 'dns.intended', response_body: records });
-  return simulated({ domain, type: 'mailgun', records: records.length, source: real.length ? 'mailgun' : 'placeholder', note: 'dry-run: intended records logged, not applied' });
+  const dmarc = dmarcRecord();
+  await ctx.logEvent({ level: 'info', endpoint: 'dns.intended', response_body: [...records, dmarc.record] });
+  return simulated({
+    domain,
+    type: 'mailgun',
+    records: records.length + 1,
+    source: real.length ? 'mailgun' : 'placeholder',
+    dmarc: {
+      action: 'add_if_absent',
+      host: `_dmarc.${domain}`,
+      value: dmarc.record.Address,
+      policy: dmarcPolicy(dmarc.record.Address),
+      ...(dmarc.warning ? { warning: dmarc.warning } : {}),
+    },
+    note: 'dry-run: intended records logged, not applied (the _dmarc TXT is written only if the domain has none)',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DMARC record (add-if-absent, written by dns.mailgun_records)
+// ---------------------------------------------------------------------------
+
+/**
+ * Monitoring-only policy: receivers evaluate DMARC (so aligned Mailgun mail
+ * shows PASS) but take no action on failures. No rua= report address on
+ * purpose: nobody reads aggregate reports today, the purchased domain has no
+ * inbox to receive them, and an address on another domain only counts if that
+ * domain also publishes a <domain>._report._dmarc authorization record per
+ * client. Set DNS_DMARC_VALUE to change it for new runs.
+ */
+export const DMARC_DEFAULT = 'v=DMARC1; p=none;';
+const DMARC_HOST = '_dmarc';
+
+/** A TXT value is a DMARC record only if it starts with v=DMARC1 (RFC 7489 6.3). */
+export function isDmarcValue(value: string | undefined): boolean {
+  return /^\s*v\s*=\s*DMARC1\s*(;|$)/i.test(value ?? '');
+}
+
+/** The p= policy of a DMARC record (not sp=), lower-cased; undefined if none. */
+export function dmarcPolicy(value: string | undefined): string | undefined {
+  if (!isDmarcValue(value)) return undefined;
+  return value!.match(/(?:^|;)\s*p\s*=\s*([a-z]+)/i)?.[1]?.toLowerCase();
+}
+
+/**
+ * The DMARC TXT to publish at _dmarc.<domain>: DNS_DMARC_VALUE if it is a valid
+ * record, else the default. A bad override falls back with a warning rather
+ * than publishing a record receivers would ignore (or blocking the step).
+ */
+export function dmarcRecord(): { record: DnsRecord; warning?: string } {
+  const configured = config.dns.dmarcValue().trim();
+  const valid = !configured || ['none', 'quarantine', 'reject'].includes(dmarcPolicy(configured) ?? '');
+  const value = configured && valid ? configured : DMARC_DEFAULT;
+  return {
+    record: { Type: 'TXT', Host: DMARC_HOST, Address: value, TTL: 1800 },
+    ...(valid ? {} : { warning: `DNS_DMARC_VALUE "${configured}" is not a valid DMARC record (it must start with v=DMARC1 and set p=none|quarantine|reject); used "${DMARC_DEFAULT}" instead` }),
+  };
+}
+
+/**
+ * What happened to DMARC on this write. `deferred` holds the existing records
+ * the add-if-absent DMARC record yielded to. Those are never changed, but a
+ * problem with them is reported: receivers ignore TXT values that are not
+ * v=DMARC1, and treat MORE than one DMARC record as no policy at all.
+ */
+export function dmarcOutcome(domain: string, rec: DnsRecord, deferred: DnsRecord[]): Record<string, unknown> & { warning?: string } {
+  const host = `_dmarc.${domain}`;
+  const existing = deferred.filter((r) => keyOf(r) === keyOf(rec));
+  if (existing.length === 0) {
+    return { action: 'added', host, value: rec.Address, policy: dmarcPolicy(rec.Address) };
+  }
+  const valid = existing.filter((r) => isDmarcValue(r.Address));
+  let warning: string | undefined;
+  if (valid.length === 0) {
+    warning = `${host} has a TXT record that is not a DMARC record ("${existing[0]!.Address}"), so mail from this domain has no DMARC policy. Left alone: replace it in Namecheap with "${rec.Address}".`;
+  } else if (valid.length > 1) {
+    warning = `${host} has ${valid.length} DMARC records; receivers treat that as no policy. Left alone: delete all but one in Namecheap.`;
+  }
+  const shown = valid[0] ?? existing[0]!;
+  return {
+    action: 'kept_existing',
+    host,
+    value: shown.Address,
+    policy: dmarcPolicy(shown.Address),
+    ...(warning ? { warning } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +372,7 @@ async function ghlDnsReal(ctx: StepContext): Promise<Record<string, unknown>> {
     await ctx.logEvent({ level: 'warn', endpoint: 'dns.ghl_records', response_body: { skipped: 'GHL_BRANDED_DNS_TARGET not set' } });
     return { domain, type: 'ghl', skipped: true, reason: 'no_target_configured' };
   }
-  return applyRecords(ctx, domain, [rec], 'ghl');
+  return (await applyRecords(ctx, domain, [rec], 'ghl')).summary;
 }
 
 async function ghlDnsDry(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -258,7 +394,8 @@ export const dnsSteps: Step[] = [
     key: 'dns.mailgun_records',
     wave: 1,
     safetyClass: 'reversible-write',
-    // After Mailgun, so we have the real DKIM/SPF/MX records to write.
+    // After Mailgun, so we have the real DKIM/SPF/MX records to write. Also
+    // publishes _dmarc.<domain> if the domain has no DMARC record yet.
     dependsOn: ['mailgun.add_domain'],
     maxAttempts: 5,
     retryProfile: 'flaky',

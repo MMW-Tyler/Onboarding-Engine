@@ -699,6 +699,20 @@ export interface Wave1Content {
 }
 
 /**
+ * Suffix for the "DNS (Mailgun records)" stack line: the DMARC record that
+ * dns.mailgun_records published or found. Empty for runs from before the step
+ * wrote DMARC (their output has no `dmarc`), so an old roll-up claims nothing.
+ */
+function dmarcNote(dmarc: unknown): string {
+  if (!dmarc || typeof dmarc !== 'object') return '';
+  const { action, policy, warning } = dmarc as Record<string, unknown>;
+  const p = typeof policy === 'string' && policy ? `\`p=${policy}\`` : '';
+  const warn = typeof warning === 'string' && warning ? ` ⚠️ ${warning}` : '';
+  if (action === 'kept_existing') return ` + DMARC (existing record kept${p ? `, ${p}` : ''})${warn}`;
+  return ` + DMARC${p ? ` ${p}` : ''}${warn}`;
+}
+
+/**
  * Build the roll-up content. `asLinks` controls link rendering: true uses Slack's
  * <url|label> syntax for an API-posted message; false emits raw URLs for a
  * copy-paste message (typed Slack text auto-links raw URLs but does NOT render
@@ -805,6 +819,7 @@ export function buildWave1Content(
     let line = `${rollupEmoji(s)}  ${label}`;
     if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
     if (k === 'mailgun.verify' && s === 'succeeded') line += `: ${out(k).verified ? 'verified' : `${out(k).state ?? 'pending'} (propagating)`}`;
+    if (k === 'dns.mailgun_records' && done(s)) line += dmarcNote(out(k).dmarc);
     if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
     stackLines.push(line);
 

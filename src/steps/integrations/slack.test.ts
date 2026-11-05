@@ -214,3 +214,28 @@ describe('buildWave1Content - returning clients', () => {
     expect(text).toContain('did NOT mark it as existing');
   });
 });
+
+describe('buildWave1Content - DMARC on the DNS line', () => {
+  const run = { id: 'run-1', client_name: 'Dermagnify', domain: 'dermagnifypx.com', client_profile_json: {} };
+  const dnsLine = (dnsRow: Record<string, any>) =>
+    buildWave1Content(run, new Map<string, any>(Object.entries({ 'dns.mailgun_records': dnsRow })), true)
+      .stackLines.find((l) => l.includes('DNS (Mailgun records)'))!;
+
+  it('says DMARC was published, with its policy', () => {
+    const line = dnsLine({ status: 'succeeded', output_json: { dmarc: { action: 'added', policy: 'none' } } });
+    expect(line).toBe('✅  DNS (Mailgun records) + DMARC `p=none`');
+  });
+
+  it('says an existing DMARC record was kept, and passes on a problem with it', () => {
+    const kept = dnsLine({ status: 'succeeded', output_json: { dmarc: { action: 'kept_existing', policy: 'reject' } } });
+    expect(kept).toContain('+ DMARC (existing record kept, `p=reject`)');
+
+    const broken = dnsLine({ status: 'succeeded', output_json: { dmarc: { action: 'kept_existing', warning: 'has 2 DMARC records' } } });
+    expect(broken).toContain('⚠️ has 2 DMARC records');
+  });
+
+  it('claims nothing about DMARC for a run from before the step wrote it, or one that failed', () => {
+    expect(dnsLine({ status: 'succeeded', output_json: { added: 5 } })).toBe('✅  DNS (Mailgun records)');
+    expect(dnsLine({ status: 'flagged', last_error: 'setHosts failed', output_json: null })).not.toContain('DMARC');
+  });
+});
