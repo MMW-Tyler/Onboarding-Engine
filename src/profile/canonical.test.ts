@@ -43,6 +43,43 @@ describe('deterministic intake mapping (real Sales Intake fields)', () => {
     expect(profile.website_build_type).toBe('WordPress');
     expect(profile.package).toBe('Platinum');
   });
+
+  it('keeps the specialty and the special additions apart', () => {
+    // The live labels from the O Aesthetics & Wellness intake (2026-10-16): the
+    // special-additions rule used to claim "Client Specialty" because the label
+    // contains "special", so the real special additions were dropped.
+    const { profile, dropped } = mapDeterministic({
+      'Client Specialty:': 'Medical Spa',
+      'Special Additions:': 'also do jumpstart program for her for candela',
+    }, 'intake');
+    expect(profile.client_specialty).toBe('Medical Spa');
+    expect(profile.special_additions).toBe('also do jumpstart program for her for candela');
+    expect(dropped).toEqual([]);
+  });
+
+  it('maps the returning-client questions without stealing other fields', () => {
+    const { profile, toAI } = mapDeterministic({
+      'Is this an existing MMW client?': 'Yes',
+      'Existing Slack channel link': 'https://medicalmarketingwhiz1.slack.com/archives/C0A74B923P0',
+      'Existing Google Drive folder link (optional)': 'https://drive.google.com/drive/folders/1BXEVtSSsbqJFf4SIRAGjR25OP8yKzRz2',
+      'Website URL': 'https://o-aestheticsandwellness.com/',
+      // Zapier's own field for the channel it just created is not an "existing" one.
+      slack_channel_id: 'C0CANTAD77S',
+    }, 'intake');
+    expect(profile.existing_client).toBe('Yes');
+    expect(profile.existing_slack_channel_link).toContain('C0A74B923P0');
+    expect(profile.existing_drive_folder_link).toContain('1BXEVtSSsbqJFf4SIRAGjR25OP8yKzRz2');
+    expect(profile.website_url).toBe('https://o-aestheticsandwellness.com/');
+    expect(toAI.map((f) => f.raw_label)).toEqual(['slack_channel_id']);
+  });
+
+  it('does not read an existing-channel URL as the website', () => {
+    const { profile } = mapDeterministic({
+      'Existing Slack channel URL': 'https://app.slack.com/client/T03BL4K35L2/C0A74B923P0',
+    }, 'intake');
+    expect(profile.website_url).toBeUndefined();
+    expect(profile.existing_slack_channel_link).toBeDefined();
+  });
 });
 
 describe('deterministic clientform mapping — sensitive routing', () => {

@@ -23,6 +23,16 @@ export interface CreateRunArgs {
   input?: Record<string, unknown>;
   /** raw Client MMW form payload -> raw_clientform_json (Wave 2) */
   clientformInput?: Record<string, unknown>;
+  /**
+   * Values known before any step runs (a Slack channel / Drive folder to reuse,
+   * a profile seed). Written in the same insert as the run, so no step can be
+   * claimed before they are there.
+   */
+  preset?: {
+    slack_channel_id?: string | null;
+    drive_root_folder_id?: string | null;
+    client_profile_json?: Record<string, unknown> | null;
+  };
 }
 
 export interface CreateRunResult {
@@ -60,6 +70,9 @@ export async function createRun(args: CreateRunArgs): Promise<CreateRunResult> {
       domain: args.client?.domain ?? null,
       raw_intake_json: args.input ?? {},
       raw_clientform_json: args.clientformInput ?? null,
+      ...(args.preset?.slack_channel_id ? { slack_channel_id: args.preset.slack_channel_id } : {}),
+      ...(args.preset?.drive_root_folder_id ? { drive_root_folder_id: args.preset.drive_root_folder_id } : {}),
+      ...(args.preset?.client_profile_json ? { client_profile_json: args.preset.client_profile_json } : {}),
     })
     .select('id')
     .single();

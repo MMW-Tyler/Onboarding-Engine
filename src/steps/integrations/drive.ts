@@ -1,8 +1,8 @@
 import type { Step, StepContext } from '../../types.js';
 import { db } from '../../supabase.js';
-import { callApi } from '../../lib/http.js';
+import { callApi, HttpError } from '../../lib/http.js';
 import { config } from '../../config.js';
-import { getGoogleAccessToken } from '../../lib/google.js';
+import { getGoogleAccessToken, googleClientEmail } from '../../lib/google.js';
 import { profileOf, simId, simulated } from './util.js';
 
 /**
@@ -75,9 +75,48 @@ async function listChildren(ctx: StepContext, headers: Record<string, string>, p
   return (res.body?.files ?? []) as DriveChild[];
 }
 
+/**
+ * Reuse a folder already set on the run instead of cloning the template again.
+ * Set by the intake webhook for a returning client (their existing folder), or
+ * by an earlier successful attempt of this step - which also makes a re-run
+ * stop creating a second folder, as rerunRun's notes always assumed it did.
+ *
+ * Nothing is added to the reused folder: an existing client's folder has its
+ * own layout, and dropping the template's ten subfolders into it would only
+ * make a mess the team then has to tidy.
+ */
+async function reuseFolder(ctx: StepContext, headers: Record<string, string>, folderId: string): Promise<Record<string, unknown>> {
+  let file: { id?: string; name?: string; mimeType?: string; trashed?: boolean } = {};
+  try {
+    const res = await callApi<any>(
+      ctx,
+      `${FILES_URL}/${encodeURIComponent(folderId)}?fields=id,name,mimeType,trashed&supportsAllDrives=true`,
+      'drive.files.get',
+      { method: 'GET', headers },
+    );
+    file = res.body ?? {};
+  } catch (err) {
+    if (err instanceof HttpError && (err.status === 404 || err.status === 403)) {
+      // Do NOT fall back to creating a new folder: a duplicate folder is the
+      // thing this path exists to prevent. Flag with the fix instead.
+      throw new Error(
+        `drive: the existing folder ${folderId} is not visible to the service account. Share it with ` +
+          `${googleClientEmail(config.drive.saJson())} (Editor), then retry this step.`,
+      );
+    }
+    throw err;
+  }
+  if (file.mimeType !== FOLDER_MIME) throw new Error(`drive: ${folderId} is not a folder (${file.mimeType ?? 'unknown type'}). Fix the link on the run and retry.`);
+  if (file.trashed) throw new Error(`drive: folder "${file.name ?? folderId}" is in the trash. Restore it, then retry this step.`);
+  return { root_folder_id: folderId, reused: true, folder_name: file.name ?? null };
+}
+
 // --- create_folders ---
 async function createFoldersReal(ctx: StepContext): Promise<Record<string, unknown>> {
   const headers = await authHeader();
+  const preset = ctx.run.drive_root_folder_id as string | undefined;
+  if (preset) return reuseFolder(ctx, headers, preset);
+
   const clientName = rootName(ctx);
   const rootId = await createFolder(ctx, headers, clientName, config.drive.parentFolderId());
 
@@ -110,6 +149,11 @@ async function createFoldersReal(ctx: StepContext): Promise<Record<string, unkno
 }
 
 async function createFoldersDry(ctx: StepContext): Promise<Record<string, unknown>> {
+  // Reusing only reads the folder's metadata, so a dry run checks it for real:
+  // that is where "the service account can't see it" shows up.
+  const preset = ctx.run.drive_root_folder_id as string | undefined;
+  if (preset) return simulated(await reuseFolder(ctx, await authHeader(), preset));
+
   // Validate credentials with a real token exchange; create nothing. Also list
   // the template so the dry run surfaces what would be cloned.
   let subfolders = 0;

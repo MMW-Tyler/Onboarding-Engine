@@ -153,6 +153,14 @@ export const config = {
       target: optional('GHL_BRANDED_DNS_TARGET', 'brand.ludicrous.cloud'),
     }),
   },
+  dns: {
+    // DMARC TXT that dns.mailgun_records publishes at _dmarc.<purchased domain>
+    // when the domain has none. Unset -> dns.ts's monitoring-only default
+    // (v=DMARC1; p=none;, no report address - see dns.ts for why). Override
+    // per-env only to add an rua= or tighten the policy; it applies to runs from
+    // then on, and never replaces a _dmarc record a domain already has.
+    dmarcValue: () => optional('DNS_DMARC_VALUE'),
+  },
   dataforseo: {
     login: () => required('DATAFORSEO_LOGIN'),
     password: () => required('DATAFORSEO_PASSWORD'),

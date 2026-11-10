@@ -4,6 +4,7 @@ import { callApi } from '../../lib/http.js';
 import { config } from '../../config.js';
 import { profileOf, siblingOutput, simId, simulated, slugifyChannel, chunkText } from './util.js';
 import { SCHEMAS } from '../../profile/canonical.js';
+import { readReturningAnswers, findPriorRun, type RunSummary } from '../../lib/returning.js';
 
 /**
  * Slack workers (spec section 11): create the client channel, post the sale
@@ -80,6 +81,44 @@ async function joinIfPublic(ctx: StepContext, id: string): Promise<void> {
   // Ignore not-ok responses (already in channel, private, etc.); next call will surface real issues.
 }
 
+/**
+ * Check the bot can actually post to a preset channel, and return its name.
+ *
+ * A Zapier-made channel is public, so joinIfPublic covers it. A returning
+ * client's existing channel is usually PRIVATE (most older client channels
+ * are), and a bot cannot join a private channel by itself. Without this check
+ * the run would carry on and the roll-up, the WhizHQ posts and the onboarding
+ * form delivery would all fail later against a channel nobody can see why they
+ * cannot reach. Flagging here puts the fix ("invite the bot") on the step that
+ * owns the channel. Only clear "not in it" answers flag; anything ambiguous
+ * (missing scope, a Slack hiccup) is logged and let through, as before.
+ */
+async function confirmPresetChannel(ctx: StepContext, id: string): Promise<string | null> {
+  const res = await callApi<any>(ctx, `${SLACK}/conversations.info?channel=${encodeURIComponent(id)}`, 'slack.conversations.info', {
+    method: 'GET',
+    headers: authHeader(),
+  });
+  const body = res.body ?? {};
+  const invite =
+    `Invite the bot to it (in the channel: /invite @WhizHQ, the app that posts these roll-ups) and retry this step.`;
+  if (body.ok) {
+    const ch = body.channel ?? {};
+    if (ch.is_archived) {
+      throw new Error(`slack: channel #${ch.name ?? id} is archived. Unarchive it, or set the right channel on the run, then retry this step.`);
+    }
+    if (ch.is_member === false) throw new Error(`slack: the bot is not a member of #${ch.name ?? id}. ${invite}`);
+    return (ch.name as string | undefined) ?? null;
+  }
+  if (body.error === 'channel_not_found') {
+    throw new Error(
+      `slack: channel ${id} is not visible to the bot. It is most likely a private channel the bot was never ` +
+        `invited to (or the link points at the wrong channel). ${invite}`,
+    );
+  }
+  await ctx.logEvent({ level: 'warn', endpoint: 'slack.conversations.info', parsed_error: `could not confirm channel ${id}: ${body.error ?? 'unknown'}` });
+  return null;
+}
+
 // --- create_channel (find-or-create) ---
 // Order of preference, given some workspaces block bot channel creation:
 //   1. The run already has slack_channel_id (e.g. Zapier passed it on the webhook).
@@ -89,10 +128,12 @@ async function joinIfPublic(ctx: StepContext, id: string): Promise<void> {
 async function createChannelReal(ctx: StepContext): Promise<Record<string, unknown>> {
   const name = slugifyChannel((ctx.run.client_name as string) || ctx.run.id);
 
-  // 1. Already set (Zapier or previous run).
+  // 1. Already set (Zapier, a returning client's existing channel, or a previous run).
   if (ctx.run.slack_channel_id) {
-    await joinIfPublic(ctx, ctx.run.slack_channel_id as string);
-    return { channel_id: ctx.run.slack_channel_id, name, source: 'preset' };
+    const id = ctx.run.slack_channel_id as string;
+    await joinIfPublic(ctx, id);
+    const actual = await confirmPresetChannel(ctx, id);
+    return { channel_id: id, name: actual ?? name, source: 'preset' };
   }
 
   // 2. Find an existing channel by name.
@@ -543,12 +584,106 @@ function websiteSection(profile: Record<string, any>): string {
 }
 
 /** Load the run row + Wave 1 step rows for the roll-up. */
-async function loadRollupData(runId: string): Promise<{ r: Record<string, any>; byKey: Map<string, any> }> {
+async function loadRollupData(runId: string): Promise<{ r: Record<string, any>; byKey: Map<string, any>; prior: RunSummary | null }> {
   const { data: run } = await db().from('onboarding_runs').select('*').eq('id', runId).single();
   const { data: stepRows } = await db()
     .from('run_steps').select('step_key, status, output_json, last_error').eq('run_id', runId).in('step_key', W1_ASSET_STEPS);
   const byKey = new Map((stepRows ?? []).map((s) => [s.step_key as string, s]));
-  return { r: (run ?? { id: runId }) as Record<string, any>, byKey };
+  const r = (run ?? { id: runId }) as Record<string, any>;
+  return { r, byKey, prior: await priorRunFor(r) };
+}
+
+/**
+ * An earlier LIVE onboarding of the same practice, for the returning-client
+ * warning. Never fails the roll-up: a lookup error just means no warning from
+ * this signal (the form answer still raises one on its own).
+ */
+async function priorRunFor(r: Record<string, any>): Promise<RunSummary | null> {
+  if (!r.created_at) return null;
+  try {
+    const { data } = await db()
+      .from('onboarding_runs')
+      .select('id, client_name, created_at, website_url:client_profile_json->>website_url')
+      .eq('recipe', 'full_onboarding')
+      .eq('mode', 'live')
+      .lt('created_at', r.created_at)
+      .order('created_at', { ascending: false })
+      .limit(500);
+    const profile = (r.client_profile_json ?? {}) as Record<string, any>;
+    const current: RunSummary = {
+      id: r.id,
+      client_name: r.client_name ?? null,
+      created_at: r.created_at,
+      website_url: typeof profile.website_url === 'string' ? profile.website_url : null,
+    };
+    return findPriorRun(current, (data ?? []) as unknown as RunSummary[]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The returning-client block at the top of the roll-up: why the run looks like
+ * a returning client, what it reused, and anything that may now be duplicated.
+ * Empty for an ordinary new client, so their roll-up is unchanged.
+ *
+ * Signals, deliberately not including HubSpot's "company already existed":
+ * sales creates the company before the deal closes, so it was true on 11 of the
+ * last 15 live runs (Oct 2026), nearly all genuinely new clients. A warning on
+ * most roll-ups is a warning nobody reads.
+ */
+export function returningClientLines(
+  r: Record<string, any>,
+  byKey: Map<string, any>,
+  prior: RunSummary | null,
+  asLinks: boolean,
+): string[] {
+  const profile = (r.client_profile_json ?? {}) as Record<string, any>;
+  const ans = readReturningAnswers(profile);
+  if (!ans.saidExisting && !ans.slackChannelId && !ans.driveFolderId && !prior) return [];
+
+  const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
+  const channelRef = (id: string) => (asLinks ? `<#${id}>` : id);
+  const lines: string[] = [ans.saidExisting ? `⚠️  *Returning client*` : `⚠️  *Possible returning client*`];
+
+  if (ans.saidExisting) lines.push(`     • The intake form says this is an existing MMW client.`);
+  if (prior) {
+    const when = String(prior.created_at).slice(0, 10);
+    lines.push(`     • The engine onboarded this practice before: *${prior.client_name ?? 'unnamed'}* on ${when} (run \`${prior.id}\`).`);
+    if (!ans.saidExisting) {
+      lines.push(`     • The intake form did NOT mark it as existing, so this run may have duplicated the Slack channel, Drive folder and ClickUp folder. Check before work starts.`);
+    }
+  }
+
+  // Slack
+  if (ans.slackChannelId && r.slack_channel_id === ans.slackChannelId) {
+    lines.push(`     • ✅ Reused the existing Slack channel${asLinks ? ' (this one)' : ''}.`);
+  } else if (ans.slackAnswer && !ans.slackChannelId) {
+    lines.push(`     • ⚠️ Couldn't read the Slack channel answer "${ans.slackAnswer}" (paste the channel's link, not its name), so a different channel was used. Keep one and archive the other.`);
+  } else if (ans.saidExisting && !ans.slackAnswer) {
+    lines.push(`     • ⚠️ No existing Slack channel link was given, so this run used a new channel. If the client already has one, keep one and archive the other.`);
+  }
+  if (typeof profile.zap_created_channel_id === 'string') {
+    lines.push(`     • ⚠️ Zapier also created a new channel (${channelRef(profile.zap_created_channel_id)}). This run used the existing one, so archive the new one.`);
+  }
+
+  // Drive
+  const drive = out('drive.create_folders');
+  if (ans.driveFolderId && drive.reused && r.drive_root_folder_id === ans.driveFolderId) {
+    lines.push(`     • ✅ Reused the existing Google Drive folder${drive.folder_name ? ` "${drive.folder_name}"` : ''}.`);
+  } else if (ans.driveAnswer && !ans.driveFolderId) {
+    lines.push(`     • ⚠️ Couldn't read the Drive folder answer "${ans.driveAnswer}" (paste the folder's link), so a new folder was created. Merge it into the old one.`);
+  } else if (ans.saidExisting && !ans.driveAnswer) {
+    lines.push(`     • ⚠️ No existing Drive folder link was given, so a new folder was created from the template. If the client already has one, merge them.`);
+  }
+
+  if (ans.saidExisting || prior) {
+    lines.push(`     • ClickUp: a new client folder and master record were created for this program. Link them to the client's older ClickUp records.`);
+    if (out('whizhq.create_client').created === true) {
+      lines.push(`     • WhizHQ: a new client record was created. If this practice already had one, make sure work doesn't land on both.`);
+    }
+  }
+  return lines;
 }
 
 export interface Wave1Content {
@@ -559,6 +694,22 @@ export interface Wave1Content {
   platformLine: string;
   stackLines: string[];
   allStackSimulated: boolean;
+  /** The returning-client block (returningClientLines), empty for a new client. */
+  returningLines: string[];
+}
+
+/**
+ * Suffix for the "DNS (Mailgun records)" stack line: the DMARC record that
+ * dns.mailgun_records published or found. Empty for runs from before the step
+ * wrote DMARC (their output has no `dmarc`), so an old roll-up claims nothing.
+ */
+function dmarcNote(dmarc: unknown): string {
+  if (!dmarc || typeof dmarc !== 'object') return '';
+  const { action, policy, warning } = dmarc as Record<string, unknown>;
+  const p = typeof policy === 'string' && policy ? `\`p=${policy}\`` : '';
+  const warn = typeof warning === 'string' && warning ? ` ⚠️ ${warning}` : '';
+  if (action === 'kept_existing') return ` + DMARC (existing record kept${p ? `, ${p}` : ''})${warn}`;
+  return ` + DMARC${p ? ` ${p}` : ''}${warn}`;
 }
 
 /**
@@ -567,7 +718,12 @@ export interface Wave1Content {
  * copy-paste message (typed Slack text auto-links raw URLs but does NOT render
  * <url|label>). *bold*, `code`, and emoji render the same either way.
  */
-export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any>, asLinks: boolean): Wave1Content {
+export function buildWave1Content(
+  r: Record<string, any>,
+  byKey: Map<string, any>,
+  asLinks: boolean,
+  prior: RunSummary | null = null,
+): Wave1Content {
   const stat = (k: string) => (byKey.get(k)?.status as string | undefined);
   const out = (k: string) => (byKey.get(k)?.output_json ?? {}) as Record<string, any>;
   const err = (k: string) => (byKey.get(k)?.last_error as string | undefined);
@@ -598,7 +754,12 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
   }
 
   const assetLines: string[] = [];
-  assetLines.push(`${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  ${asLinks ? 'this channel' : 'created'}`);
+  const returning = readReturningAnswers(profile);
+  const reusedChannel = !!returning.slackChannelId && r.slack_channel_id === returning.slackChannelId;
+  assetLines.push(
+    `${rollupEmoji(stat('slack.create_channel'))}  *Slack channel*  —  ` +
+      (reusedChannel ? (asLinks ? 'this channel (existing, reused)' : 'existing channel, reused') : asLinks ? 'this channel' : 'created'),
+  );
 
   const companyId = (r.hubspot_company_id as string | undefined) ?? out('hubspot.upsert').company_id;
   if (companyId) {
@@ -617,7 +778,14 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
   if (taskId) assetLines.push(`${rollupEmoji(stat('clickup.master_tracker'))}  *ClickUp tracker*  —  ${val(`https://app.clickup.com/t/${taskId}`, 'Open task')}`);
 
   const driveId = r.drive_root_folder_id as string | undefined;
-  if (driveId) assetLines.push(`${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ${val(`https://drive.google.com/drive/folders/${driveId}`, 'Open Drive folder')}`);
+  if (driveId) {
+    const reusedDrive = out('drive.create_folders').reused === true;
+    assetLines.push(
+      `${rollupEmoji(stat('drive.create_folders'))}  *Google Drive*  —  ` +
+        `${val(`https://drive.google.com/drive/folders/${driveId}`, reusedDrive ? 'Open existing Drive folder' : 'Open Drive folder')}` +
+        `${reusedDrive ? ' (reused)' : ''}`,
+    );
+  }
 
   const locId = r.ghl_location_id as string | undefined;
   if (locId) {
@@ -651,6 +819,7 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
     let line = `${rollupEmoji(s)}  ${label}`;
     if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
     if (k === 'mailgun.verify' && s === 'succeeded') line += `: ${out(k).verified ? 'verified' : `${out(k).state ?? 'pending'} (propagating)`}`;
+    if (k === 'dns.mailgun_records' && done(s)) line += dmarcNote(out(k).dmarc);
     if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
     stackLines.push(line);
 
@@ -665,7 +834,9 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
   }
   const allStackSimulated = STACK.every(([k]) => stat(k) === 'simulated' || stat(k) === undefined);
 
-  return { client, dashboardLine, assetLines, platformLine, stackLines, allStackSimulated };
+  const returningLines = returningClientLines(r, byKey, prior, asLinks);
+
+  return { client, dashboardLine, assetLines, platformLine, stackLines, allStackSimulated, returningLines };
 }
 
 /**
@@ -673,11 +844,12 @@ export function buildWave1Content(r: Record<string, any>, byKey: Map<string, any
  * to auto-post to). Raw URLs + *bold* + emoji render correctly when pasted.
  */
 export async function buildWave1RollupText(runId: string): Promise<string> {
-  const { r, byKey } = await loadRollupData(runId);
-  const c = buildWave1Content(r, byKey, false);
+  const { r, byKey, prior } = await loadRollupData(runId);
+  const c = buildWave1Content(r, byKey, false, prior);
   return [
     `✅ Wave 1 complete — ${c.client}`,
     `Account setup is done. Lines marked "↳ Action" need a quick human step. When the client's MMW onboarding form comes in, it gets posted to this channel - that's the last automated step.`,
+    ...(c.returningLines.length ? [``, ...c.returningLines] : []),
     ...(c.dashboardLine ? [``, c.dashboardLine] : []),
     ``,
     `📦 Assets created`,
@@ -694,14 +866,17 @@ export async function buildWave1RollupText(runId: string): Promise<string> {
 
 async function wave1RollupReal(ctx: StepContext): Promise<Record<string, unknown>> {
   // Re-read the run: sibling steps wrote ids onto it after our snapshot was taken.
-  const { r, byKey } = await loadRollupData(ctx.run.id);
+  const { r, byKey, prior } = await loadRollupData(ctx.run.id);
   const channel = r.slack_channel_id as string | undefined;
   if (!channel) return { posted: false, reason: 'no slack channel on run' };
 
-  const c = buildWave1Content(r, byKey, true);
+  const c = buildWave1Content(r, byKey, true, prior);
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `✅ Wave 1 complete — ${c.client}`, emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: `Account setup is done. Lines marked *↳ Action* need a quick human step. When the client's *MMW onboarding form* comes in, it gets posted to this channel — that's the last automated step.` } },
+    // Right under the intro, above the dashboard link: whether this practice is
+    // a returning client decides how the team should read everything below.
+    ...(c.returningLines.length ? [{ type: 'section', text: { type: 'mrkdwn', text: c.returningLines.join('\n') } }] : []),
     ...(c.dashboardLine ? [{ type: 'section', text: { type: 'mrkdwn', text: c.dashboardLine } }] : []),
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `:package: *Assets created*\n${c.assetLines.join('\n')}` } },
