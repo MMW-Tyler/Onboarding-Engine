@@ -18,14 +18,43 @@ function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${config.hubspot.accessToken()}` };
 }
 
-/** Derive a bare hostname from a URL string; falls back to empty string on parse failure. */
-function domainFrom(websiteUrl: string | undefined): string {
+/**
+ * Derive a bare hostname from a URL string ("https://www.example-clinic.com/" ->
+ * "example-clinic.com"); empty string on parse failure. HubSpot stores company
+ * domains without "www.", and an exact search for "www.example-clinic.com" missed
+ * the existing "example-clinic.com" company and created a duplicate
+ * (2026-07-21).
+ */
+export function domainFrom(websiteUrl: string | undefined): string {
   if (!websiteUrl) return '';
   try {
-    return new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`).hostname;
+    return new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`).hostname.toLowerCase().replace(/^www\./, '');
   } catch {
     return '';
   }
+}
+
+/**
+ * Exact searches to try, in order, before creating a company: the bare domain,
+ * its www form (older records), the full name, then the name without a
+ * trailing "(Dr. ...)" ("Example Clinic (Dr. Jane Doe)" -> "Example Clinic").
+ */
+export function companyLookups(name: string, domain: string): [string, string][] {
+  const bare = (domain || '').toLowerCase().replace(/^www\./, '');
+  const short = (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const all: [string, string][] = [
+    ['domain', bare],
+    ['domain', bare ? `www.${bare}` : ''],
+    ['name', (name || '').trim()],
+    ['name', short],
+  ];
+  const seen = new Set<string>();
+  return all.filter(([prop, value]) => {
+    const key = `${prop}:${value}`;
+    if (!value || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // --- search helpers (dedup): find an existing record before creating one ---
@@ -87,20 +116,31 @@ async function upsertReal(ctx: StepContext): Promise<Record<string, unknown>> {
     if (!companyProperties[key]) delete companyProperties[key];
   }
 
-  const existingCompanyId =
-    (await searchId(ctx, headers, 'companies', 'domain', domain)) ??
-    (await searchId(ctx, headers, 'companies', 'name', name));
+  let existingCompanyId: string | null = null;
+  for (const [prop, value] of companyLookups(name, domain)) {
+    existingCompanyId = await searchId(ctx, headers, 'companies', prop, value);
+    if (existingCompanyId) break;
+  }
+  // An existing record keeps its own name and domain (sales' "Example Clinic" must
+  // not be renamed "Example Clinic (Dr. Jane Doe)"); phone, city and state still fill in.
+  if (existingCompanyId) {
+    delete companyProperties.name;
+    delete companyProperties.domain;
+  }
 
   let companyId: string;
   let companyExisted: boolean;
   if (existingCompanyId) {
     // Update in place (only non-empty props survived the prune above).
-    const upd = await callApi<any>(ctx, `${BASE}/crm/v3/objects/companies/${existingCompanyId}`, 'hubspot.companies.update', {
-      method: 'PATCH',
-      headers,
-      json: { properties: companyProperties },
-    });
-    companyId = (upd.body?.id as string) ?? existingCompanyId;
+    companyId = existingCompanyId;
+    if (Object.keys(companyProperties).length) {
+      const upd = await callApi<any>(ctx, `${BASE}/crm/v3/objects/companies/${existingCompanyId}`, 'hubspot.companies.update', {
+        method: 'PATCH',
+        headers,
+        json: { properties: companyProperties },
+      });
+      companyId = (upd.body?.id as string) ?? existingCompanyId;
+    }
     companyExisted = true;
   } else {
     const created = await callApi<any>(ctx, `${BASE}/crm/v3/objects/companies`, 'hubspot.companies.create', {
