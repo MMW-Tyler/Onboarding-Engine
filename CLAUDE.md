@@ -145,6 +145,51 @@ Still outstanding, both human jobs in ClickUp:
    these clients get no onboarding checklist — which is the worst thing to be
    missing on a program whose whole risk is scheduling.
 
+## State as of 2026-11-11 (read this first; it corrects older notes below)
+
+- **The engine is moving into WhizHQ** as a super-admin-only module, ported to
+  plain JavaScript. Scope and decisions: `Whiz HQ/_context/onboarding-engine-migration.md`.
+  Until cutover this service stays live; fixes still go to `main` here.
+- **The client onboarding form now reaches the team without touching the zap.**
+  The zap still sends Google's question ids. `src/lib/formLabels.ts` turns them
+  back into question text: a question id is the form's public entry id in hex,
+  and the public form page lists every entry id with its question. A snapshot is
+  baked in and a live read (cached 1 hour, `CLIENTFORM_PUBLIC_URL`) is laid over
+  it, so a new or reworded question needs no deploy. A new question the
+  normalizer has no rule for is still posted verbatim. The "switch the zap to a
+  Sheets trigger" advice below is no longer needed.
+- **Form matching:** live `full_onboarding` runs only, by website, then by exact
+  normalized practice name when exactly one client has it. No match: the
+  fallback channel, and if Slack refuses that, a DM to the alert user.
+  `SLACK_FALLBACK_CHANNEL_ID` in Render is wrong or the bot is not in it (it
+  returned channel_not_found on every unmatched form); the DM covers it.
+- **Alerts go to Tyler by Slack DM** (`SLACK_ALERT_USER_ID`, default his user
+  id). Every flagged step calls `alertFlagged`, which used to only log.
+- **A restart mid-step no longer repeats a risky write.** A step found `running`
+  at claim time was interrupted. `NOT_SAFE_TO_REPEAT` in `engine/runner.ts`
+  (domain purchase, GHL sub-account, ClickUp folder clone, tracker row, Drive
+  folders, WhizHQ client) flags with what to check; everything else re-runs.
+  When you add a write step, decide which side of that list it belongs on.
+  SIGTERM drains the step in flight for up to 25 seconds.
+- **`namecheap.purchase_domain` adopts a domain this run already ordered** (it
+  reads its own `namecheap.purchase.target` events) instead of buying the
+  fallback on a second execution, and the price guard fails closed.
+- **Secrets in URLs are redacted** (`ApiKey=`, the relay's `s=`). Rows logged
+  before this date still hold both in clear: see the scope doc, Namecheap.
+- **Supabase: RLS is on** for all four tables, no policies. The service role key
+  bypasses it. `db/schema.sql` has the statements.
+- **Render env, corrected:** `WHIZHQ_BASE_URL` and `WHIZHQ_AUTOMATION_KEY` ARE
+  set (the hand-off has succeeded on every run since August).
+  `CLICKUP_WHIZ_LAUNCH_LIST_ID` = `1600320000016689` and `SLACK_ALERT_USER_ID`
+  were set 2026-11-11. The Whiz Launch sample list is still named "DRAFT,
+  verify against agreement", and the tracker still has no "Whiz Launch"
+  Contract Type option.
+- **Sales Intake form** has the three returning-client questions as of
+  2026-11-11, right after "Name Of Office". **The intake zap does not forward
+  them yet**, and it still creates a Slack channel for every submission. Both
+  need an edit in Zapier (Tyler's login).
+- **The plan is free, not starter**, whatever `render.yaml` says. It sleeps.
+
 ## Production URL + Zapier wiring (IMPORTANT - stop asking the user for this)
 
 - **Live service URL: `https://onboarding-engine-h299.onrender.com`**
