@@ -27,6 +27,7 @@ export const recipes: Record<string, string[]> = {
     'drive.create_folders',
     'namecheap.purchase_domain',
     'mailgun.add_domain',
+    'mailgun.tracking',
     'dns.mailgun_records',
     'dns.ghl_records',
     'mailgun.verify',
@@ -53,6 +54,7 @@ export const recipes: Record<string, string[]> = {
     'ghl.provision_subaccount',
     'namecheap.purchase_domain',
     'mailgun.add_domain',
+    'mailgun.tracking',
     'dns.mailgun_records',
     'dns.ghl_records',
     'mailgun.verify',
@@ -80,6 +82,7 @@ export const recipes: Record<string, string[]> = {
   domain_warmup_only: [
     'namecheap.purchase_domain',
     'mailgun.add_domain',
+    'mailgun.tracking',
     'dns.mailgun_records',
     'dns.ghl_records',
     'mailgun.verify',

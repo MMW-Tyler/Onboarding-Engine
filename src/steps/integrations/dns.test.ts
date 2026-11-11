@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { StepContext } from '../../types.js';
-import { dnsSteps, mergeHosts, dmarcRecord, dmarcPolicy, dmarcOutcome, DMARC_DEFAULT, type DnsRecord } from './dns.js';
+import { dnsSteps, mergeHosts, dmarcRecord, dmarcPolicy, dmarcOutcome, DMARC_DEFAULT, planEmail, parseEmailType, parseForwarders, type DnsRecord } from './dns.js';
 
 // Namecheap is reached through callApi; capture every URL instead of calling it.
-const nc = vi.hoisted(() => ({ calls: [] as string[], getHostsXml: '' }));
+const nc = vi.hoisted(() => ({ calls: [] as string[], getHostsXml: '', forwardingXml: '' }));
 const calls = nc.calls;
 vi.mock('../../lib/http.js', () => ({
   callApi: async (_ctx: unknown, url: string, label: string) => {
     nc.calls.push(url);
     const raw = label.endsWith('getHosts')
       ? nc.getHostsXml
+      : label.endsWith('getEmailForwarding')
+      ? nc.forwardingXml
       : '<ApiResponse Status="OK"><CommandResponse><DomainDNSSetHostsResult Domain="dermagnifypx.com" IsSuccess="true" /></CommandResponse></ApiResponse>';
     return { status: 200, ok: true, body: null, raw };
   },
@@ -34,9 +36,27 @@ function written(url: string): { Host: string; Type: string; Address: string }[]
   return out;
 }
 
-function hostsXml(records: { Name: string; Type: string; Address: string }[]): string {
-  const hosts = records.map((r, i) => `<host HostId="${i + 1}" Name="${r.Name}" Type="${r.Type}" Address="${r.Address}" MXPref="10" TTL="1800" />`).join('');
-  return `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.getHosts"><DomainDNSGetHostsResult Domain="${DOMAIN}" IsUsingOurDNS="true">${hosts}</DomainDNSGetHostsResult></CommandResponse></ApiResponse>`;
+/** getHosts XML as Namecheap returns it. A new domain is on email forwarding (FWD). */
+function hostsXml(records: { Name: string; Type: string; Address: string; MXPref?: number }[], emailType = 'FWD'): string {
+  const hosts = records.map((r, i) => `<host HostId="${i + 1}" Name="${r.Name}" Type="${r.Type}" Address="${r.Address}" MXPref="${r.MXPref ?? 10}" TTL="1800" />`).join('');
+  return `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.getHosts"><DomainDNSGetHostsResult Domain="${DOMAIN}" EmailType="${emailType}" IsUsingOurDNS="true">${hosts}</DomainDNSGetHostsResult></CommandResponse></ApiResponse>`;
+}
+
+function forwardingXml(forwards: Record<string, string> = {}): string {
+  const rows = Object.entries(forwards).map(([box, to]) => `<Forward mailbox="${box}">${to}</Forward>`).join('');
+  return `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.getEmailForwarding"><DomainDNSGetEmailForwardingResult Domain="${DOMAIN}">${rows}</DomainDNSGetEmailForwardingResult></CommandResponse></ApiResponse>`;
+}
+
+const setHostsCall = () => calls.find((u) => u.includes('setHosts'))!;
+const param = (url: string, name: string) => new URL(url).searchParams.get(name);
+/** MX rows a setHosts URL would write, with their priority. */
+function mxRows(url: string): { Host: string; Address: string; MXPref: string }[] {
+  const q = new URL(url).searchParams;
+  const out: { Host: string; Address: string; MXPref: string }[] = [];
+  for (let n = 1; q.has(`HostName${n}`); n++) {
+    if (q.get(`RecordType${n}`) === 'MX') out.push({ Host: q.get(`HostName${n}`)!, Address: q.get(`Address${n}`)!, MXPref: q.get(`MXPref${n}`)! });
+  }
+  return out;
 }
 
 /** A run as mailgun.add_domain leaves it (records shaped like Mailgun's API). */
@@ -71,6 +91,7 @@ const rec = (Host: string, Type: string, Address: string): DnsRecord => ({ Host,
 beforeEach(() => {
   calls.length = 0;
   nc.getHostsXml = hostsXml([]);
+  nc.forwardingXml = forwardingXml();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -201,6 +222,97 @@ describe('dns.mailgun_records - writes DMARC with the Mailgun records', () => {
     (ctx.run as { client_profile_json: unknown }).client_profile_json = {};
     const out = await step('dns.mailgun_records').runDry(ctx);
     expect(out).toMatchObject({ source: 'placeholder', records: 6 });
+  });
+});
+
+describe('dns.mailgun_records - MX records need EmailType=MX (2026-11-11)', () => {
+  const MG_MX = [
+    { Host: 'mg', Address: 'mxa.mailgun.org', MXPref: '10' },
+    { Host: 'mg', Address: 'mxb.mailgun.org', MXPref: '10' },
+  ];
+
+  it('sends EmailType=MX with both mg MX rows at priority 10 on a new domain', async () => {
+    const out = await step('dns.mailgun_records').runReal(ctxFor());
+    const set = setHostsCall();
+    expect(param(set, 'EmailType')).toBe('MX');
+    expect(mxRows(set)).toEqual(MG_MX);
+    // It asked about forwarders before switching the domain off forwarding.
+    expect(calls.some((u) => u.includes('getEmailForwarding') && u.includes(`DomainName=${DOMAIN}`))).toBe(true);
+    expect(out.mx).toEqual({ action: 'switched_to_mx', email_type_before: 'FWD', forwarders: [] });
+  });
+
+  it('does NOT switch a domain that forwards email, and leaves the MX rows out', async () => {
+    nc.forwardingXml = forwardingXml({ info: 'owner@example.com', billing: 'owner@example.com' });
+    const ctx = ctxFor();
+    const out = await step('dns.mailgun_records').runReal(ctx);
+    const set = setHostsCall();
+    expect(param(set, 'EmailType')).toBeNull();
+    expect(mxRows(set)).toEqual([]);
+    // Everything else is still written.
+    expect(written(set)).toContainEqual({ Host: 'mg', Type: 'TXT', Address: 'v=spf1 include:mailgun.org ~all' });
+    expect(written(set)).toContainEqual({ Host: '_dmarc', Type: 'TXT', Address: 'v=DMARC1; p=none;' });
+    expect(out).toMatchObject({ added: 4, mx: { action: 'blocked', forwarders: ['info', 'billing'] } });
+    expect((out.mx as { warning: string }).warning).toContain('forwards email for info, billing');
+    expect((ctx.events as { endpoint?: string; level?: string }[]).some((e) => e.endpoint === 'dns.mx' && e.level === 'warn')).toBe(true);
+  });
+
+  it('does NOT switch when the forwarders cannot be read', async () => {
+    nc.forwardingXml = '<ApiResponse Status="ERROR"><Errors><Error Number="2019166">Domain not found</Error></Errors></ApiResponse>';
+    const out = await step('dns.mailgun_records').runReal(ctxFor());
+    expect(param(setHostsCall(), 'EmailType')).toBeNull();
+    expect(mxRows(setHostsCall())).toEqual([]);
+    expect(out.mx).toMatchObject({ action: 'blocked' });
+  });
+
+  it('does NOT switch a domain on other mail settings (Private Email, MXE)', async () => {
+    nc.getHostsXml = hostsXml([], 'OX');
+    const out = await step('dns.mailgun_records').runReal(ctxFor());
+    expect(param(setHostsCall(), 'EmailType')).toBeNull();
+    expect(mxRows(setHostsCall())).toEqual([]);
+    expect(calls.some((u) => u.includes('getEmailForwarding'))).toBe(false);
+    expect((out.mx as { warning: string }).warning).toContain('Mail Settings are "OX"');
+  });
+
+  it('keeps existing root MX records when the domain is already on custom MX', async () => {
+    nc.getHostsXml = hostsXml([
+      { Name: '@', Type: 'MX', Address: 'aspmx.l.google.com.', MXPref: 1 },
+      { Name: 'mg', Type: 'MX', Address: 'mxa.mailgun.org.', MXPref: 10 },
+    ], 'MX');
+    const out = await step('dns.mailgun_records').runReal(ctxFor());
+    const set = setHostsCall();
+    expect(param(set, 'EmailType')).toBe('MX');
+    expect(mxRows(set)).toEqual([{ Host: '@', Address: 'aspmx.l.google.com.', MXPref: '1' }, ...MG_MX]);
+    expect(calls.some((u) => u.includes('getEmailForwarding'))).toBe(false);
+    expect(out.mx).toEqual({ action: 'already_mx', email_type_before: 'MX' });
+  });
+
+  it('planEmail and the parsers', () => {
+    expect(parseEmailType(hostsXml([], 'fwd'))).toBe('FWD');
+    expect(parseEmailType('<DomainDNSGetHostsResult Domain="a.com" IsUsingOurDNS="true">')).toBe('');
+    expect(parseForwarders(forwardingXml({ info: 'a@b.com' }))).toEqual(['info']);
+    expect(parseForwarders(forwardingXml())).toEqual([]);
+    expect(planEmail(DOMAIN, 'FWD', false, [])).toEqual({ action: 'none', email_type_before: 'FWD' });
+    expect(planEmail(DOMAIN, '', true, []).action).toBe('switched_to_mx');
+    expect(planEmail(DOMAIN, 'MX', false, []).emailType).toBe('MX');
+  });
+});
+
+describe('dns.ghl_records - a later write must not undo the MX records', () => {
+  it('re-sends EmailType=MX and the mg MX rows once the domain is on custom MX', async () => {
+    nc.getHostsXml = hostsXml([
+      { Name: 'mg', Type: 'MX', Address: 'mxa.mailgun.org.' },
+      { Name: 'mg', Type: 'MX', Address: 'mxb.mailgun.org.' },
+    ], 'MX');
+    await step('dns.ghl_records').runReal(ctxFor());
+    const set = setHostsCall();
+    expect(param(set, 'EmailType')).toBe('MX');
+    expect(mxRows(set)).toHaveLength(2);
+  });
+
+  it('sends no EmailType on a forwarding domain, as before', async () => {
+    await step('dns.ghl_records').runReal(ctxFor());
+    expect(param(setHostsCall(), 'EmailType')).toBeNull();
+    expect(calls.some((u) => u.includes('getEmailForwarding'))).toBe(false);
   });
 });
 

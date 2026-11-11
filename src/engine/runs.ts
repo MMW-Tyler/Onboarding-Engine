@@ -209,7 +209,7 @@ export async function promoteDependents(runId: string, completedStepKey: string)
  * repeatedly (spec section 09 idempotency).
  */
 export async function retryStep(runId: string, stepKey: string): Promise<void> {
-  const step = await loadStep(runId, stepKey);
+  const step = (await loadStep(runId, stepKey)) ?? (await addRecipeStep(runId, stepKey));
   if (!step) throw new Error(`retryStep: no such step ${stepKey} on run ${runId}`);
   // Test fixture: clear the echo step's in-memory fail budget so retry gives a
   // clean attempt rather than continuing the persistent failure simulation.
@@ -223,6 +223,34 @@ export async function retryStep(runId: string, stepKey: string): Promise<void> {
     .update({ status: 'queued', run_after: new Date().toISOString(), claimed_at: null })
     .eq('run_id', runId).eq('step_key', stepKey);
   await enqueueJobs(runId, [stepKey]);
+}
+
+/**
+ * Backfill a step that was added to a recipe after this run was created (e.g.
+ * mailgun.tracking, 2026-11-11): if the run's recipe now includes the step and
+ * the run has no row for it, create the row so it can be retried like any
+ * other. Returns null when the step is not part of the run's recipe. Nothing
+ * downstream is touched: no existing step depends on the new one.
+ */
+async function addRecipeStep(runId: string, stepKey: string): Promise<RunStep | null> {
+  const def = getStep(stepKey);
+  if (!def) return null;
+  const { data: run } = await db().from('onboarding_runs').select('recipe').eq('id', runId).maybeSingle();
+  const keys = run ? recipeSteps(run.recipe as string) : undefined;
+  if (!keys || !keys.includes(stepKey)) return null;
+  const selected = new Set(keys);
+  const { error } = await db().from('run_steps').insert({
+    run_id: runId,
+    step_key: stepKey,
+    wave: def.wave,
+    safety_class: def.safetyClass,
+    status: 'pending' as StepStatus,
+    max_attempts: def.maxAttempts ?? defaultMaxAttempts(def.retryProfile ?? defaultProfileFor(def.safetyClass)),
+    depends_on: def.dependsOn.filter((d) => selected.has(d)),
+    idempotency_key: `${runId}:${stepKey}`,
+  });
+  if (error) throw new Error(`addRecipeStep: ${error.message}`);
+  return loadStep(runId, stepKey);
 }
 
 export interface RerunResult {

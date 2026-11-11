@@ -215,6 +215,45 @@ describe('buildWave1Content - returning clients', () => {
   });
 });
 
+describe('buildWave1Content - MX records and tracking on the stack lines', () => {
+  const run = { id: 'run-1', client_name: 'Dermagnify', domain: 'dermagnifypx.com', client_profile_json: {} };
+  const lines = (steps: Record<string, any>) =>
+    buildWave1Content(run, new Map<string, any>(Object.entries(steps)), true).stackLines;
+  const dnsLine = (steps: Record<string, any>) => lines(steps).find((l) => l.includes('DNS (Mailgun records)'))!;
+  const dns = (mx: Record<string, any>) => ({ status: 'succeeded', output_json: { dmarc: { action: 'added', policy: 'none' }, mx } });
+
+  it('says the MX records were written', () => {
+    expect(dnsLine({ 'dns.mailgun_records': dns({ action: 'switched_to_mx' }) })).toBe('✅  DNS (Mailgun records) + DMARC `p=none` + MX');
+  });
+
+  it('passes on why the MX records were not written', () => {
+    const line = dnsLine({ 'dns.mailgun_records': dns({ action: 'blocked', warning: 'MX records NOT written: a.com forwards email for info' }) });
+    expect(line).toContain('⚠️ MX records NOT written: a.com forwards email for info');
+  });
+
+  it('warns when Mailgun verified the domain but sees no valid MX', () => {
+    const line = dnsLine({
+      'dns.mailgun_records': dns({ action: 'switched_to_mx' }),
+      'mailgun.verify': { status: 'succeeded', output_json: { verified: true, mx_valid: false, mx_warning: 'Mailgun does not see valid MX records on mg.a.com' } },
+    });
+    expect(line).toContain('+ MX ⚠️ Mailgun does not see valid MX records on mg.a.com');
+  });
+
+  it('stays calm while DNS is still propagating', () => {
+    const line = dnsLine({
+      'dns.mailgun_records': dns({ action: 'switched_to_mx' }),
+      'mailgun.verify': { status: 'succeeded', output_json: { verified: false, state: 'unverified', mx_valid: false, mx_warning: 'x' } },
+    });
+    expect(line).toBe('✅  DNS (Mailgun records) + DMARC `p=none` + MX (MX not confirmed by Mailgun yet)');
+  });
+
+  it('shows the tracking line only for runs that have the step', () => {
+    expect(lines({}).some((l) => l.includes('Mailgun tracking settings'))).toBe(false);
+    const withStep = lines({ 'mailgun.tracking': { status: 'succeeded', output_json: {} } });
+    expect(withStep).toContain('✅  Mailgun tracking settings: click off, opens on, unsubscribe off, http');
+  });
+});
+
 describe('buildWave1Content - DMARC on the DNS line', () => {
   const run = { id: 'run-1', client_name: 'Dermagnify', domain: 'dermagnifypx.com', client_profile_json: {} };
   const dnsLine = (dnsRow: Record<string, any>) =>

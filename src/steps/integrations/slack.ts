@@ -540,6 +540,7 @@ const W1_ASSET_STEPS = [
   'dns.ghl_records',
   'dns.mailgun_records',
   'mailgun.add_domain',
+  'mailgun.tracking',
   'mailgun.verify',
   'warmup.enroll',
   'crawl.detect_platform',
@@ -730,6 +731,23 @@ function dmarcNote(dmarc: unknown): string {
 }
 
 /**
+ * Suffix for the same line about the MX records on mg.<domain> (2026-11-11).
+ * `mx` is dns.mailgun_records' own report (were the rows written, or blocked
+ * by forwarders); `verify` is mailgun.verify's output, which says whether
+ * Mailgun can see them. Empty for runs from before either existed.
+ */
+function mxNote(mx: unknown, verify: Record<string, any> | null): string {
+  const m = (mx && typeof mx === 'object' ? mx : {}) as Record<string, unknown>;
+  if (m.action === 'blocked') return ` ⚠️ ${typeof m.warning === 'string' ? m.warning : 'MX records NOT written'}`;
+  const wrote = m.action === 'switched_to_mx' || m.action === 'already_mx' ? ' + MX' : '';
+  if (!verify || verify.mx_valid === undefined || verify.mx_valid === true) return wrote;
+  // Not valid. Right after the write that is normal (propagation); once the
+  // domain is verified it means the MX rows really are missing.
+  if (!verify.verified) return `${wrote} (MX not confirmed by Mailgun yet)`;
+  return `${wrote} ⚠️ ${verify.mx_warning ?? 'Mailgun does not see valid MX records on the sending domain'}`;
+}
+
+/**
  * Build the roll-up content. `asLinks` controls link rendering: true uses Slack's
  * <url|label> syntax for an API-posted message; false emits raw URLs for a
  * copy-paste message (typed Slack text auto-links raw URLs but does NOT render
@@ -825,6 +843,7 @@ export function buildWave1Content(
   const STACK: [string, string][] = [
     ['namecheap.purchase_domain', 'Domain purchase'],
     ['mailgun.add_domain', 'Mailgun sending domain'],
+    ['mailgun.tracking', 'Mailgun tracking settings'],
     ['dns.mailgun_records', 'DNS (Mailgun records)'],
     ['dns.ghl_records', 'DNS (GHL branded)'],
     ['mailgun.verify', 'Mailgun verification'],
@@ -833,10 +852,13 @@ export function buildWave1Content(
   const stackLines: string[] = [];
   for (const [k, label] of STACK) {
     const s = stat(k);
+    // Runs from before the tracking step existed have no row for it: say nothing.
+    if (k === 'mailgun.tracking' && !byKey.has(k)) continue;
     let line = `${rollupEmoji(s)}  ${label}`;
     if (k === 'namecheap.purchase_domain' && s === 'succeeded' && out(k).domain) line += `: \`${out(k).domain}\``;
     if (k === 'mailgun.verify' && s === 'succeeded') line += `: ${out(k).verified ? 'verified' : `${out(k).state ?? 'pending'} (propagating)`}`;
-    if (k === 'dns.mailgun_records' && done(s)) line += dmarcNote(out(k).dmarc);
+    if (k === 'dns.mailgun_records' && done(s)) line += dmarcNote(out(k).dmarc) + mxNote(out(k).mx, stat('mailgun.verify') === 'succeeded' ? out('mailgun.verify') : null);
+    if (k === 'mailgun.tracking' && s === 'succeeded') line += ': click off, opens on, unsubscribe off, http';
     if ((s === 'flagged' || s === 'failed') && err(k)) line += ` — ${err(k)}`;
     stackLines.push(line);
 
@@ -963,7 +985,7 @@ export const slackSteps: Step[] = [
       // whizhq.crawl_report: crawl_report waits on this roll-up so it can reply
       // in its thread, and soft-depending back on either would deadlock both.
       'whizhq.create_client',
-      'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'mailgun.verify', 'warmup.enroll',
+      'namecheap.purchase_domain', 'dns.ghl_records', 'dns.mailgun_records', 'mailgun.add_domain', 'mailgun.tracking', 'mailgun.verify', 'warmup.enroll',
     ],
     maxAttempts: 3, isApplicable: () => true, runReal: wave1RollupReal, runDry: wave1RollupDry,
   },

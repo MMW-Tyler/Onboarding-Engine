@@ -34,6 +34,16 @@ import type { MailgunDnsRecord } from './mailgun.js';
  * it is add-if-absent: a _dmarc record the domain already has (one added by
  * hand, or a policy someone tightened) is never replaced, and a second one is
  * never added, since two DMARC records means no policy at all.
+ *
+ * MX records need EmailType=MX (2026-11-11). Namecheap only applies custom MX
+ * records when setHosts carries EmailType=MX; without it the MX rows are dropped
+ * silently and the domain stays on "Email Forwarding". That left mg.<domain>
+ * with no MX and no A record, and strict receivers (Paubox, Proofpoint) rejected
+ * Mailgun mail with "sender's domain could not be found in DNS" while Gmail
+ * accepted it. Every setHosts whose record set holds an MX now sends
+ * EmailType=MX. Switching turns Namecheap's forwarding off, so a domain that
+ * has forwarders (or runs MXE / Private Email / Gmail mail settings) is never
+ * switched: its MX rows are left out and the step reports why. See planEmail.
  */
 
 // ---------------------------------------------------------------------------
@@ -63,6 +73,11 @@ function splitDomain(domain: string): { sld: string; tld: string } {
   return { sld: domain.slice(0, dot), tld: domain.slice(dot + 1) };
 }
 
+/** Build the getEmailForwarding URL for a domain. */
+function getEmailForwardingUrl(domain: string): string {
+  return namecheapUrl('namecheap.domains.dns.getEmailForwarding', { DomainName: domain });
+}
+
 /** Build the getHosts URL for a domain. */
 function getHostsUrl(domain: string): string {
   const { sld, tld } = splitDomain(domain);
@@ -74,9 +89,12 @@ function getHostsUrl(domain: string): string {
  * Each record is numbered 1..N and yields HostNameN/RecordTypeN/AddressN/
  * MXPrefN/TTLN params as required by the API.
  */
-function setHostsUrl(domain: string, records: DnsRecord[]): string {
+function setHostsUrl(domain: string, records: DnsRecord[], emailType?: string): string {
   const { sld, tld } = splitDomain(domain);
   const extra: Record<string, string> = { SLD: sld, TLD: tld };
+  // Without EmailType=MX Namecheap drops every MX row and keeps the domain on
+  // its current mail setting (forwarding, for a new domain).
+  if (emailType) extra.EmailType = emailType;
   records.forEach((rec, i) => {
     const n = String(i + 1);
     extra[`HostName${n}`] = rec.Host;
@@ -113,6 +131,20 @@ function parseHosts(xml: string): DnsRecord[] {
     });
   }
   return records;
+}
+
+/** The domain's mail setting from a getHosts response: FWD | MX | MXE | OX | ... ('' if absent). */
+export function parseEmailType(xml: string): string {
+  return (xml.match(/<DomainDNSGetHostsResult\b[^>]*\bEmailType\s*=\s*"([^"]*)"/i)?.[1] ?? '').trim().toUpperCase();
+}
+
+/** Mailboxes forwarded by Namecheap email forwarding (getEmailForwarding's <Forward> rows). */
+export function parseForwarders(xml: string): string[] {
+  const out: string[] = [];
+  const re = /<Forward\b([^>]*)>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) out.push(m[1]!.match(/mailbox\s*=\s*"([^"]*)"/i)?.[1] ?? '(unnamed)');
+  return out;
 }
 
 /** Namecheap setHosts returns IsSuccess="true" inside the CommandResponse. */
@@ -208,15 +240,99 @@ async function applyRecords(
   }
   const existing = parseHosts(getXml);
 
-  const { merged, kept, written, deferred } = mergeHosts(existing, incoming, addIfAbsent);
+  const full = mergeHosts(existing, incoming, addIfAbsent);
+  const deferred = full.deferred;
+  const kept = full.kept;
 
-  const setRes = await callApi(ctx, setHostsUrl(domain, merged), 'namecheap.domains.dns.setHosts');
+  // MX rows only take effect with EmailType=MX, and switching to it turns off
+  // Namecheap email forwarding. Decide before writing (see planEmail).
+  const emailTypeBefore = parseEmailType(getXml);
+  // "Wants MX" means THIS write adds MX rows. Existing MX rows on a domain that
+  // is already in MX mode are kept by re-sending EmailType=MX (planEmail).
+  const wantsMx = full.written.some(isMx);
+  let forwarders: string[] | null = [];
+  if (wantsMx && (emailTypeBefore === 'FWD' || emailTypeBefore === '')) {
+    forwarders = await readForwarders(ctx, domain);
+  }
+  const mx = planEmail(domain, emailTypeBefore, wantsMx, forwarders);
+  if (mx.warning) await ctx.logEvent({ level: 'warn', endpoint: 'dns.mx', response_body: mx });
+
+  // Blocked: leave the MX rows out rather than send rows Namecheap would drop.
+  const written = mx.action === 'blocked' ? full.written.filter((r) => !isMx(r)) : full.written;
+  const merged = [...kept, ...written];
+
+  const setRes = await callApi(ctx, setHostsUrl(domain, merged, mx.emailType), 'namecheap.domains.dns.setHosts');
   const setXml = unwrapRelayXml(setRes.raw);
   if (!parseSetHostsSuccess(setXml)) {
     throw new Error(`namecheap.domains.dns.setHosts failed (${type}): ${parseApiError(setXml) ?? 'unknown error'}`);
   }
 
-  return { summary: { domain, type, added: written.length, kept: kept.length, total: merged.length }, deferred };
+  const { emailType: _sent, ...mxOut } = mx;
+  return {
+    summary: { domain, type, added: written.length, kept: kept.length, total: merged.length, ...(wantsMx ? { mx: mxOut } : {}) },
+    deferred,
+  };
+}
+
+const isMx = (r: DnsRecord) => r.Type.toUpperCase() === 'MX';
+
+/**
+ * Forwarders on the domain, or null when Namecheap would not say. null is
+ * treated as "may have forwarders" (the switch is refused), never as none.
+ */
+async function readForwarders(ctx: StepContext, domain: string): Promise<string[] | null> {
+  try {
+    const res = await callApi(ctx, getEmailForwardingUrl(domain), 'namecheap.domains.dns.getEmailForwarding');
+    const xml = unwrapRelayXml(res.raw);
+    if (!parseApiStatus(xml)) {
+      await ctx.logEvent({ level: 'warn', endpoint: 'dns.mx', parsed_error: `getEmailForwarding failed: ${parseApiError(xml) ?? 'unknown error'}` });
+      return null;
+    }
+    return parseForwarders(xml);
+  } catch (e) {
+    await ctx.logEvent({ level: 'warn', endpoint: 'dns.mx', parsed_error: `getEmailForwarding failed: ${(e as Error).message}` });
+    return null;
+  }
+}
+
+export interface EmailPlan {
+  /** none: no MX in the set. already_mx / switched_to_mx: MX rows written. blocked: MX rows left out. */
+  action: 'none' | 'already_mx' | 'switched_to_mx' | 'blocked';
+  /** EmailType to send on setHosts (undefined = leave the domain's mail setting alone). */
+  emailType?: 'MX';
+  email_type_before: string;
+  forwarders?: string[];
+  warning?: string;
+}
+
+/**
+ * Decide whether a setHosts may carry EmailType=MX.
+ *
+ *  - already MX: always send MX again, whatever this write adds (omitting it
+ *    could drop the MX rows the domain has, root ones included).
+ *  - this write adds no MX: send nothing, the mail setting stays as it is.
+ *  - FWD (or not reported) with no forwarders: switch to MX. True for every
+ *    purchased <base>px.com domain so far; nothing is forwarding there.
+ *  - FWD with forwarders, or forwarders unreadable: do NOT switch. Switching
+ *    would silently stop that mail.
+ *  - anything else (MXE, OX = Private Email, GMAIL...): do NOT switch. Someone
+ *    set up real mail on the domain; MX mode would replace it.
+ */
+export function planEmail(domain: string, emailTypeBefore: string, wantsMx: boolean, forwarders: string[] | null): EmailPlan {
+  const before = emailTypeBefore || 'unknown';
+  if (emailTypeBefore === 'MX') return { action: wantsMx ? 'already_mx' : 'none', emailType: 'MX', email_type_before: before };
+  if (!wantsMx) return { action: 'none', email_type_before: before };
+  const fix = `mg.${domain} has no MX records, so strict receivers will reject mail sent from it. Fix by hand in Namecheap (Advanced DNS > Mail Settings > Custom MX: host mg, mxa.mailgun.org and mxb.mailgun.org, priority 10) once that mail is moved or confirmed unused.`;
+  if (emailTypeBefore === 'FWD' || emailTypeBefore === '') {
+    if (forwarders === null) {
+      return { action: 'blocked', email_type_before: before, warning: `MX records NOT written: could not read ${domain}'s email forwarders, and switching Mail Settings to Custom MX would turn forwarding off. ${fix}` };
+    }
+    if (forwarders.length > 0) {
+      return { action: 'blocked', email_type_before: before, forwarders, warning: `MX records NOT written: ${domain} forwards email for ${forwarders.join(', ')}, and switching Mail Settings to Custom MX would turn that off. ${fix}` };
+    }
+    return { action: 'switched_to_mx', emailType: 'MX', email_type_before: before, forwarders: [] };
+  }
+  return { action: 'blocked', email_type_before: before, warning: `MX records NOT written: ${domain}'s Mail Settings are "${emailTypeBefore}", not forwarding, so the engine left them alone. ${fix}` };
 }
 
 function requireDomain(ctx: StepContext): string {
@@ -281,6 +397,7 @@ async function mailgunDnsDry(ctx: StepContext): Promise<Record<string, unknown>>
       policy: dmarcPolicy(dmarc.record.Address),
       ...(dmarc.warning ? { warning: dmarc.warning } : {}),
     },
+    mx: { action: 'switch_to_mx_unless_forwarders', note: 'live sends EmailType=MX with the mg MX rows, unless the domain has email forwarders or other mail settings' },
     note: 'dry-run: intended records logged, not applied (the _dmarc TXT is written only if the domain has none)',
   });
 }

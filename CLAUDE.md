@@ -504,6 +504,58 @@ with the URL sees that client's portal.
   It re-applies the stored Mailgun records unchanged, adds `_dmarc` if missing,
   and promotes no downstream steps (they are already terminal).
 
+## MX records on mg.<domain>, and the Mailgun tracking standard (2026-11-11)
+
+- **What went wrong:** `dermagnifypx.com` had SPF, DKIM, the `email.mg` CNAME,
+  the `go` CNAME and `_dmarc`, but NO MX on host `mg`, and Namecheap Mail
+  Settings still said "Email Forwarding". The envelope sender is on
+  `mg.<domain>`, and a host with no MX and no A record does not exist as far as
+  strict receivers are concerned: Paubox and Proofpoint rejected Mailgun mail
+  with "The sender's domain could not be found in DNS". **Gmail accepts it, so
+  a test sent to Gmail proves nothing.** A real patient lead (Nov 8) bounced at
+  all three practice addresses.
+- **Cause:** `mailgun.add_domain` stored Mailgun's two MX records and
+  `dns.mailgun_records` passed them to setHosts, but **Namecheap only applies
+  custom MX rows when setHosts carries `EmailType=MX`**. Without it the rows
+  are dropped silently and the call still returns success.
+- **Now:** every setHosts that adds an MX row sends `EmailType=MX`, and a domain
+  already in MX mode always gets `EmailType=MX` re-sent (so `dns.ghl_records`,
+  which writes after, cannot undo it). getHosts reports the current setting as
+  the `EmailType` attribute on `DomainDNSGetHostsResult` (`FWD` on a new domain).
+- **Switching to MX turns Namecheap email forwarding off**, so `planEmail` in
+  `dns.ts` refuses when that would break something. It switches only from `FWD`
+  with no forwarders (`namecheap.domains.dns.getEmailForwarding`, true for every
+  purchased `<base>px.com` domain so far). Forwarders present, forwarders
+  unreadable, or any other setting (`MXE`, `OX` = Private Email, ...): the MX
+  rows are left out, everything else is still written, and the step output's
+  `mx.warning` goes on the roll-up's DNS line. Existing MX rows, root ones
+  included, are kept like any other record.
+- **`mailgun.verify` now checks MX too.** Domain state flips to `active` on SPF
+  and DKIM alone, which is how this hid. The step reads `receiving_dns_records`
+  and returns `mx_valid`; a verified domain without valid MX gets a warning on
+  the roll-up's DNS line (while still propagating it only says "not confirmed").
+- **Tracking standard (Lori, Nov 2026): click tracking OFF, open tracking ON,
+  unsubscribes OFF, tracking protocol http.** The tracking host
+  `email.mg.<domain>` has no TLS certificate, so Mailgun's rewritten links and
+  unsubscribe links are http and mail clients flag them "dangerous link". A new
+  Mailgun domain comes with click tracking ON. New step **`mailgun.tracking`**
+  (after `mailgun.add_domain`, reversible-write) reads the settings, writes only
+  what differs (`PUT /v3/domains/{d}/tracking/click|open|unsubscribe` with
+  `active=true|false`, `PUT /v4/domains/{d}` with `web_scheme=http`), reads
+  back, and fails if Mailgun still shows the old value. Dry run reads and
+  reports the differences. Never turn click tracking on for a client domain.
+- **Audit:** `GET /audit/email-stack` is read-only and reports, for every live
+  run's domain plus every `mg.*` domain in Mailgun: MX on `mg` in public DNS,
+  Namecheap `EmailType`, forwarders, the four tracking settings, and a verdict
+  (`clean`, `needs_backfill`, `skip_has_forwarders`, `skip_other_mail_settings`,
+  `check_by_hand`). It takes a minute or two.
+- **Backfill for older clients:** retry `dns.mailgun_records` and
+  `mailgun.tracking` on the run (`POST /runs/:id/steps/<key>/retry`). Runs
+  created before 2026-11-11 have no `mailgun.tracking` row; `retryStep` now
+  creates the row when the run's recipe includes the step. Run the audit first,
+  skip anything it marks `skip_*`, and get Tyler's OK: these are live DNS and
+  Mailgun writes.
+
 ## Why platform detection kept coming back "unknown" (2026-08-12)
 
 - **The main bug: `crawl.detect_platform` read `ctx.run.domain` first.** It and

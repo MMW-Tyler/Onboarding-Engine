@@ -154,6 +154,18 @@ runsRouter.get('/runs/:id/rollup-text', async (req, res) => {
   }
 });
 
+/** GET /audit/email-stack - read-only report on every client sending domain:
+ *  MX on mg.<domain>, Namecheap mail settings and forwarders, and the four
+ *  Mailgun tracking settings. Writes nothing. Slow (one domain at a time). */
+runsRouter.get('/audit/email-stack', async (_req, res) => {
+  try {
+    const { auditEmailStack } = await import('../lib/emailAudit.js');
+    return res.json(await auditEmailStack());
+  } catch (err) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 /** GET /runs/:id/warmup-setup - paste-ready SMTP values for attaching the
  *  client's domain to its assigned warmup inbox (creates/resets the Mailgun
  *  SMTP credential; password not persisted). */
