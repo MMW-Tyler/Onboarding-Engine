@@ -49,7 +49,23 @@ export const config = {
   slack: {
     botToken: () => required('SLACK_BOT_TOKEN'),
     fallbackChannelId: () => optional('SLACK_FALLBACK_CHANNEL_ID'),
+    // Who hears about it when a run needs a human: a flagged step, or an
+    // onboarding form that matched no client. A Slack USER id; the bot DMs
+    // them. Defaults to Tyler (2026-11-11: "Tyler would be the right person").
+    alertUserId: () => optional('SLACK_ALERT_USER_ID', 'U09KGJ67BKR'),
   },
+  clientform: {
+    // Public URL of the Client MMW onboarding form. Read (and cached) to turn
+    // the question ids the zap sends back into question text; see
+    // lib/formLabels.ts. A snapshot is baked in, so this failing is not fatal.
+    publicUrl: () =>
+      optional(
+        'CLIENTFORM_PUBLIC_URL',
+        'https://docs.google.com/forms/d/e/1FAIpQLSd6LCEMZ6UZU5ZNqV-Oyu_6g6JnKGiWNhgtzTbmZUYKu0SoKA/viewform',
+      ),
+  },
+  // Where the dashboard lives, for links in alerts.
+  publicBaseUrl: () => optional('PUBLIC_BASE_URL', 'https://onboarding-engine-h299.onrender.com').replace(/\/+$/, ''),
   hubspot: {
     accessToken: () => required('HUBSPOT_ACCESS_TOKEN'),
     // Optional: your HubSpot portal (account) id, used only to build a clickable

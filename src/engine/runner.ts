@@ -50,6 +50,33 @@ export async function processJob(job: JobRow): Promise<void> {
     return;
   }
 
+  // 1b. Found `running` at claim time: the previous execution never finished.
+  // The process was restarted (a deploy, a crash, the free instance going to
+  // sleep) while this step was in flight, and the job was reclaimed after the
+  // claim timeout. Until 2026-11-11 the step was simply executed again, with no
+  // look at maxAttempts - so a restart during domains.create bought the
+  // fallback domain, and one during a GHL or ClickUp create made a second
+  // account or folder. Now: a step that is safe to repeat is repeated, and one
+  // that is not stops here for a human, who is told what to check first.
+  if (stepRow.status === 'running') {
+    const live = (run.mode ?? getRunMode()) === 'live' && !isDryOverridden(stepRow.step_key);
+    const reason = live ? interruptedReason(stepRow.step_key, stepDef.safetyClass) : null;
+    const log = makeLogger(run.id, stepRow.step_key, stepRow.attempts, run.mode ?? getRunMode());
+    if (reason) {
+      await log({ level: 'error', endpoint: `runner://${stepRow.step_key}`, parsed_error: reason });
+      await setStepStatus(stepRow.id, 'flagged', reason);
+      await finishJob(job.id, 'failed');
+      await alertFlagged(run, stepRow.step_key, reason);
+      await promoteDependents(run.id, stepRow.step_key);
+      return;
+    }
+    await log({
+      level: 'warn',
+      endpoint: `runner://${stepRow.step_key}`,
+      parsed_error: 'previous execution was interrupted by a restart; this step is safe to repeat, running it again',
+    });
+  }
+
   // 2. Not applicable -> skipped (dependency treated as satisfied).
   if (!stepDef.isApplicable(run)) {
     await setStepStatus(stepRow.id, 'skipped');
@@ -162,6 +189,43 @@ export async function processJob(job: JobRow): Promise<void> {
       await promoteDependents(run.id, stepRow.step_key); // flips pending dependents to blocked
     }
   }
+}
+
+// --- interrupted steps ---
+
+/**
+ * Writes that must NOT be repeated blind after an interruption, each with what
+ * a human should check before pressing retry. Every other reversible write was
+ * read and confirmed to find-before-create or overwrite in place (Slack channel,
+ * HubSpot upsert, the onboarding list copy, Mailgun add/verify, both DNS writes,
+ * warmup, the WhizHQ crawl) or is a Slack post, where a rare duplicate message
+ * beats a form or roll-up that never arrives.
+ */
+const NOT_SAFE_TO_REPEAT: Record<string, string> = {
+  'namecheap.purchase_domain':
+    'Check the Namecheap account for this client\'s <name>px.com / <name>patients.com domain. The step adopts a domain it already ordered, so retry is safe either way.',
+  'ghl.provision_subaccount':
+    'Check GoHighLevel for a sub-account with this client\'s name. If one exists, do not retry (a retry creates a second one); note its location id on the run instead.',
+  'clickup.clone_template':
+    'Check the ClickUp client space for a folder with this client\'s name. If one exists, delete the partial folder before retrying, or leave the step as is.',
+  'clickup.master_tracker':
+    'Check the Master Account Tracker for a row with this client\'s name. If one exists, do not retry (a retry adds a second row).',
+  'drive.create_folders':
+    'Check the Clients folder in Drive for this client\'s folder. If one exists, delete the partial folder before retrying.',
+  'whizhq.create_client':
+    'Check WhizHQ for a client with this name. If one exists, do not retry (a retry creates a second client).',
+};
+
+/**
+ * Why an interrupted step must stop for a human, or null when it can simply run
+ * again. read-safe steps never get here with a reason: they change nothing.
+ */
+export function interruptedReason(stepKey: string, safetyClass: string): string | null {
+  if (safetyClass === 'read-safe') return null;
+  const check = NOT_SAFE_TO_REPEAT[stepKey]
+    ?? (safetyClass === 'costly' ? 'Check whether the charge went through before retrying.' : null);
+  if (!check) return null;
+  return `Interrupted by a restart partway through, so it is not known whether it finished. ${check}`;
 }
 
 // --- helpers ---

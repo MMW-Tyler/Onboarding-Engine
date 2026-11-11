@@ -257,6 +257,29 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   const candidates = purchaseCandidates(ctx);
   await ctx.logEvent({ level: 'info', endpoint: 'namecheap.purchase.candidates', response_body: { candidates } });
 
+  // ALREADY ORDERED? This step used to look only at availability, so any second
+  // execution (a retry, "re-run live", a restart mid-purchase) found the first
+  // domain taken - by us - and bought the fallback as well. Before buying,
+  // look at this run's own log: if an earlier execution got as far as ordering
+  // a domain and that domain is no longer available, it is ours. Use it.
+  const ordered = await previouslyOrdered(ctx.run.id);
+  for (const prior of ordered) {
+    const checkRes = await callApi(ctx, ncUrl('namecheap.domains.check', { DomainList: prior }), 'namecheap.domains.check');
+    const outcome = checkOutcome(checkRes.raw);
+    if ('error' in outcome) {
+      throw new Error(`namecheap: domains.check failed for ${prior} (ordered earlier by this run): ${outcome.error}`);
+    }
+    if (!outcome.available) {
+      await ctx.logEvent({
+        level: 'warn',
+        endpoint: 'namecheap.purchase.adopted',
+        parsed_error: `${prior} was ordered by an earlier execution of this step and is registered; using it instead of buying another domain`,
+      });
+      await saveDomain(ctx, prior);
+      return { domain: prior, purchased: true, adopted: true };
+    }
+  }
+
   let domain = '';
   let selected: Extract<CheckOutcome, { available: true }> | null = null;
   for (const candidate of candidates) {
@@ -287,7 +310,13 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
   const cap = config.namecheap.maxPrice();
   const cost = await estimateCost(ctx, selected);
   await ctx.logEvent({ level: 'info', endpoint: 'namecheap.price.estimate', response_body: { domain, estimated_cost: cost, cap, premium: selected.isPremium } });
-  if (cost !== null && cost > cap) {
+  // The guard fails CLOSED: no readable price means no purchase. (It used to
+  // pass when pricing could not be parsed, which is exactly when it matters.
+  // Every live purchase so far has returned a price, $10.98 to $12.08.)
+  if (cost === null) {
+    throw new Error(`namecheap: could not read a price for ${domain}, so the $${cap.toFixed(2)} cap cannot be checked - flagged, not purchased.`);
+  }
+  if (cost > cap) {
     throw new Error(`namecheap: ${domain} would cost ~$${cost.toFixed(2)}, over the $${cap.toFixed(2)} cap${selected.isPremium ? ' (premium domain)' : ''} - flagged, not purchased.`);
   }
 
@@ -342,6 +371,35 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
     throw new Error(`namecheap.domains.create failed: ${errMsg}`);
   }
 
+  await saveDomain(ctx, domain);
+  return { domain, purchased: true };
+}
+
+/**
+ * Domains an earlier execution of this step, on this run, got as far as
+ * ordering: a `namecheap.purchase.target` event is written immediately before
+ * domains.create. Newest first, de-duplicated. Events survive a re-run.
+ */
+async function previouslyOrdered(runId: string): Promise<string[]> {
+  const { data, error } = await db()
+    .from('step_events')
+    .select('response_body, ts')
+    .eq('run_id', runId)
+    .eq('step_key', 'namecheap.purchase_domain')
+    .eq('endpoint', 'namecheap.purchase.target')
+    .eq('mode', 'live')
+    .order('ts', { ascending: false })
+    .limit(10);
+  if (error) throw new Error(`namecheap: could not read this run's purchase history: ${error.message}`);
+  const out: string[] = [];
+  for (const row of data ?? []) {
+    const d = (row.response_body as { domain?: unknown } | null)?.domain;
+    if (typeof d === 'string' && d && !out.includes(d)) out.push(d);
+  }
+  return out;
+}
+
+async function saveDomain(ctx: StepContext, domain: string): Promise<void> {
   // Persist the purchased domain as the run's working domain, and backfill the
   // original site into the profile so a later re-run derives the base from the
   // ORIGINAL site (not this purchased domain). Non-destructive: only sets
@@ -356,8 +414,6 @@ async function purchaseDomainReal(ctx: StepContext): Promise<Record<string, unkn
     .from('onboarding_runs')
     .update({ domain, client_profile_json: profilePatch, updated_at: new Date().toISOString() })
     .eq('id', ctx.run.id);
-
-  return { domain, purchased: true };
 }
 
 // ---------------------------------------------------------------------------

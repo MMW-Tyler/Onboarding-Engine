@@ -6,6 +6,7 @@ import { extractWebsiteDomain, toHost, looksLikeDomain } from '../lib/domain.js'
 import { isOnboardingPackage } from '../lib/packages.js';
 import { readReturningAnswers } from '../lib/returning.js';
 import { mapDeterministic } from '../profile/canonical.js';
+import { resolveClientFormLabels } from '../lib/formLabels.js';
 
 /**
  * The doorbell (spec section 01/05). Zapier POSTs the two Google Form
@@ -20,6 +21,27 @@ function verifySecret(req: { header: (n: string) => string | undefined }): boole
   if (!config.webhookSecret) return true; // not configured yet (dev)
   const provided = req.header('x-mmw-secret') ?? req.header('X-MMW-Secret');
   return provided === config.webhookSecret;
+}
+
+/** Lowercase, drop punctuation and legal suffixes, so "Eunoia MediSpa, LLC" and
+ *  "eunoia medispa" compare equal. */
+export function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(llc|inc|pllc|pc|pa|md|corp|co|ltd|the)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** The practice name the client typed on the onboarding form, if any. */
+function practiceNameFromBody(body: Record<string, unknown>): string | null {
+  for (const [label, value] of Object.entries(body)) {
+    if (!/legal name|name of (your )?(business|practice|office)/i.test(label)) continue;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 /** Pull a Slack channel ID Zapier may pass in the intake payload. Matches any
@@ -126,27 +148,61 @@ webhooksRouter.post('/webhook/intake', async (req, res) => {
  * the purchase step never touches once it's populated.
  */
 async function findRunIdByDomain(domain: string): Promise<string | null> {
+  // Only a LIVE Wave 1 run is a client. This used to match any run, so a dry
+  // test run, or an earlier unmatched form (recipe clientform_delivery, which
+  // has no Slack channel), could swallow a real client's form.
   const exact = await db()
     .from('onboarding_runs')
     .select('id')
     .eq('domain', domain)
+    .eq('recipe', 'full_onboarding')
+    .eq('mode', 'live')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
   if (exact.data?.id) return exact.data.id as string;
 
-  const { data: candidates } = await db()
-    .from('onboarding_runs')
-    .select('id, client_profile_json, created_at')
-    .order('created_at', { ascending: false })
-    .limit(200);
-  for (const row of candidates ?? []) {
+  for (const row of await liveWave1Runs()) {
     const websiteUrl = (row.client_profile_json as Record<string, unknown> | null)?.website_url;
     if (typeof websiteUrl === 'string' && looksLikeDomain(websiteUrl) && toHost(websiteUrl) === domain) {
       return row.id as string;
     }
   }
   return null;
+}
+
+interface Wave1Row { id: string; client_name: string | null; client_profile_json: unknown }
+
+async function liveWave1Runs(): Promise<Wave1Row[]> {
+  const { data } = await db()
+    .from('onboarding_runs')
+    .select('id, client_name, client_profile_json, created_at')
+    .eq('recipe', 'full_onboarding')
+    .eq('mode', 'live')
+    .order('created_at', { ascending: false })
+    .limit(200);
+  return (data ?? []) as Wave1Row[];
+}
+
+/**
+ * Second chance when the website answer doesn't match: the practice name. A
+ * client who types a different site than sales did (a new domain, a booking
+ * page, a typo) still names their practice the same way. Exact match on the
+ * normalized name only, and only when exactly one client has that name, so a
+ * form is never attached to the wrong practice.
+ */
+async function findRunIdByName(name: string): Promise<string | null> {
+  const wanted = normalizeName(name);
+  if (wanted.length < 4) return null;
+  const hits = (await liveWave1Runs()).filter((row) => {
+    const profile = (row.client_profile_json ?? {}) as Record<string, unknown>;
+    const names = [row.client_name, profile.office_name, profile.legal_business_name]
+      .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+      .map(normalizeName);
+    return names.includes(wanted);
+  });
+  const ids = [...new Set(hits.map((h) => h.id))];
+  return ids.length === 1 ? ids[0]! : null;
 }
 
 /**
@@ -159,12 +215,24 @@ const CLIENTFORM_STEPS = ['profile.normalize_clientform', 'slack.post_clientform
 
 webhooksRouter.post('/webhook/clientform', async (req, res) => {
   if (!verifySecret(req)) return res.status(401).json({ error: 'bad secret' });
-  const body = (req.body ?? {}) as Record<string, unknown>;
+  // The zap forwards Google's raw response, keyed by question id. Put the
+  // question text back first (see lib/formLabels.ts) so the website answer can
+  // be found, the normalizer can map fields, and Slack shows real labels.
+  const labels = await resolveClientFormLabels((req.body ?? {}) as Record<string, unknown>, config.clientform.publicUrl());
+  const body = labels.body;
+  if (labels.relabeled > 0 || labels.unknown.length > 0) {
+    console.log(
+      `[webhook] clientform: ${labels.relabeled} question ids translated to question text` +
+        (labels.unknown.length ? `, ${labels.unknown.length} unknown (${labels.unknown.join(', ')})` : ''),
+    );
+  }
   const domain = extractWebsiteDomain(body);
+  const practice = practiceNameFromBody(body);
 
   try {
     // Try to attach Wave 2 to the existing Wave 1 run (so it reuses the Slack channel).
-    const runId = domain ? await findRunIdByDomain(domain) : null;
+    const runId =
+      (domain ? await findRunIdByDomain(domain) : null) ?? (practice ? await findRunIdByName(practice) : null);
 
     if (runId) {
       await db().from('onboarding_runs').update({ raw_clientform_json: body, updated_at: new Date().toISOString() }).eq('id', runId);

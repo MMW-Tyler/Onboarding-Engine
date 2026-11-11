@@ -136,3 +136,21 @@ begin
   return next v_job;
 end;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Row level security (2026-11-11)
+-- The engine talks to these tables with the service role key, which bypasses
+-- RLS. Nothing else should ever read them: they hold client answers, logins a
+-- client typed into the onboarding form, and request logs. With RLS off, the
+-- project's public (anon) key could read and write every row through the REST
+-- API. RLS on with NO policies means anon and authenticated get nothing.
+-- ---------------------------------------------------------------------------
+alter table onboarding_runs enable row level security;
+alter table run_steps       enable row level security;
+alter table step_events     enable row level security;
+alter table jobs            enable row level security;
+
+revoke all on onboarding_runs, run_steps, step_events, jobs from anon, authenticated;
+revoke execute on function claim_next_job(int) from public, anon, authenticated;
+grant  execute on function claim_next_job(int) to service_role;
+alter function claim_next_job(int) set search_path = public;

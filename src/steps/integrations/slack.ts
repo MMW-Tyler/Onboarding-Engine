@@ -458,27 +458,44 @@ export function buildClientFormPost(
 function clientFormChannel(ctx: StepContext): { channel: string; unmatched: boolean } {
   const own = ctx.run.slack_channel_id as string | undefined;
   if (own) return { channel: own, unmatched: false };
-  const fallback = config.slack.fallbackChannelId();
+  // No client channel: the fallback channel if one is set, else a DM to the
+  // person who handles "this needs a human" (a Slack user id works as a
+  // chat.postMessage channel; it lands in their DM with the bot).
+  const fallback = config.slack.fallbackChannelId() || config.slack.alertUserId();
   if (!fallback) {
     throw new Error(
-      'slack: this run has no channel and SLACK_FALLBACK_CHANNEL_ID is not set, so the onboarding form has ' +
-        'nowhere to go. Set the fallback channel (or link this run to a Wave 1 run) and retry.',
+      'slack: this run has no channel and neither SLACK_FALLBACK_CHANNEL_ID nor SLACK_ALERT_USER_ID is set, ' +
+        'so the onboarding form has nowhere to go. Set one (or link this run to a Wave 1 run) and retry.',
     );
   }
   return { channel: fallback, unmatched: true };
 }
 
 async function postClientFormReal(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { channel, unmatched } = clientFormChannel(ctx);
+  let { channel, unmatched } = clientFormChannel(ctx);
   const normalize = await siblingOutput(ctx.run.id, 'profile.normalize_clientform');
   const post = buildClientFormPost(ctx.run as unknown as Record<string, any>, normalize?.output ?? null, { unmatched });
+  const message = { text: post.fallback, blocks: post.blocks, mrkdwn: true };
 
-  const res = await slackPost<any>(ctx, 'chat.postMessage', {
-    channel,
-    text: post.fallback,
-    blocks: post.blocks,
-    mrkdwn: true,
-  });
+  let res: any;
+  try {
+    res = await slackPost<any>(ctx, 'chat.postMessage', { channel, ...message });
+  } catch (err) {
+    // The fallback channel id was wrong (or the bot was never invited) from
+    // 2026-09-11 to 2026-11-06, and nine unmatched forms died here with
+    // channel_not_found. An unmatched form must reach a person, so when the
+    // fallback channel can't be posted to, DM the alert user instead.
+    const dm = config.slack.alertUserId();
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!unmatched || !dm || dm === channel || !/channel_not_found|not_in_channel|is_archived/.test(msg)) throw err;
+    await ctx.logEvent({
+      level: 'warn',
+      endpoint: 'slack.post_clientform_profile',
+      parsed_error: `fallback channel ${channel} refused the post (${msg}); sent as a DM to ${dm} instead`,
+    });
+    channel = dm;
+    res = await slackPost<any>(ctx, 'chat.postMessage', { channel, ...message });
+  }
   // Pin it in the client's own channel (it's the record of what they told us).
   // Never in the fallback channel - that one is shared and would fill up.
   if (!unmatched) {

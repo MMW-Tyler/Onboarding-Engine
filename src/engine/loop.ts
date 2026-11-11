@@ -11,6 +11,8 @@ import { processJob, type JobRow } from './runner.js';
  */
 let running = false;
 let stopRequested = false;
+/** true while a step is executing (between claim and processJob returning) */
+let busy = false;
 
 export function startLoop(): void {
   if (running) return;
@@ -22,6 +24,19 @@ export function startLoop(): void {
 
 export function stopLoop(): void {
   stopRequested = true;
+}
+
+/**
+ * Graceful shutdown: stop claiming new jobs and wait for the step in flight to
+ * finish, up to `timeoutMs`. Render sends SIGTERM and then waits 30 seconds on
+ * every deploy; without this the process died mid-step and the step was later
+ * re-run from the top. Resolves true when the loop went idle in time.
+ */
+export async function drainLoop(timeoutMs: number): Promise<boolean> {
+  stopRequested = true;
+  const deadline = Date.now() + timeoutMs;
+  while (busy && Date.now() < deadline) await sleep(100);
+  return !busy;
 }
 
 async function tickForever(): Promise<void> {
@@ -44,10 +59,16 @@ async function drain(): Promise<boolean> {
   let any = false;
   // Safety bound so a flood of always-ready jobs can't starve the sleep forever.
   for (let i = 0; i < 100; i++) {
+    if (stopRequested) break; // shutting down: leave queued jobs for the next process
     const job = await claimNext();
     if (!job) break;
     any = true;
-    await processJob(job);
+    busy = true;
+    try {
+      await processJob(job);
+    } finally {
+      busy = false;
+    }
   }
   return any;
 }

@@ -48,7 +48,19 @@ export function redact(value: unknown, depth = 0): unknown {
   return out;
 }
 
-/** Catch "Bearer xxx" / "Basic xxx" tokens embedded in free-text strings. */
+/**
+ * Query-string parameters that carry a credential. Namecheap takes its API key
+ * as `ApiKey=` and the relay takes its shared secret as `s=`, both in the URL,
+ * and the URL is logged with every call. Key-name redaction never saw them
+ * (the key is "url"), so 184 log rows written before 2026-11-11 hold both in
+ * clear. `s` is only treated as a secret right after `?` or `&`.
+ */
+const SECRET_QUERY_PARAM =
+  /([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|secret|password|pwd|sig|signature|s)=)[^&#\s"']+/gi;
+
+/** Catch "Bearer xxx" / "Basic xxx" tokens and secret URL parameters in strings. */
 function redactBearerInString(s: string): string {
-  return s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._\-+/=]+/gi, `$1 ${REDACTED}`);
+  return s
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._\-+/=]+/gi, `$1 ${REDACTED}`)
+    .replace(SECRET_QUERY_PARAM, `$1${REDACTED}`);
 }

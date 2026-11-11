@@ -2,7 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config, getRunMode } from './config.js';
-import { startLoop } from './engine/loop.js';
+import { startLoop, drainLoop } from './engine/loop.js';
 import { runsRouter } from './routes/runs.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { dashboardRouter } from './routes/dashboard.js';
@@ -29,7 +29,24 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
 });
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`[web] OnboardEngine listening on :${config.port} (mode=${getRunMode()})`);
   startLoop();
 });
+
+// Render sends SIGTERM on every deploy and waits 30s before SIGKILL. Let the
+// step in flight finish (most take a few seconds) instead of dying mid-write.
+// A step still running at the deadline is caught on the next boot by the
+// runner's interrupted-step check, which never blindly repeats a risky write.
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[web] ${signal} received, letting the current step finish`);
+  server.close();
+  const idle = await drainLoop(25000);
+  console.log(idle ? '[web] loop idle, exiting' : '[web] a step was still running at the deadline, exiting anyway');
+  process.exit(0);
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
