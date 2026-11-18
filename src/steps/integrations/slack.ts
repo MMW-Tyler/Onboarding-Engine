@@ -825,6 +825,12 @@ export function buildWave1Content(
   const locId = r.ghl_location_id as string | undefined;
   if (locId) {
     assetLines.push(`${rollupEmoji(stat('ghl.provision_subaccount'))}  *GHL sub-account*  —  ${val(`https://app.medicalmarketingwhiz.com/v2/location/${locId}/dashboard`, 'Open in GHL')}`);
+    // GHL's HIPAA switch is per sub-account only: POST /locations/ has no field
+    // for it, there is no agency-wide default, and a snapshot does not carry it.
+    // So it stays a manual click, and every engine-made sub-account up to
+    // 2026-11-18 was left with it off. The link opens the agency-side Manage
+    // Client page, where the switch lives.
+    assetLines.push(`        ↳ *Action:* turn on *HIPAA* for this sub-account: ${val(`https://app.medicalmarketingwhiz.com/accounts/detail/${locId}`, 'Manage Client')} > *Advanced Settings* > Advanced Email Settings > HIPAA. GHL can't do this automatically, and it can't be turned off once it's on.`);
     // 10DLC is not automated (the snapshot import covers most of the setup, the
     // submission itself is manual) and approval takes days, so it has to be
     // started now rather than when the first campaign is ready to send. Every

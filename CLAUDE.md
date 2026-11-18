@@ -190,6 +190,25 @@ Still outstanding, both human jobs in ClickUp:
   need an edit in Zapier (Tyler's login).
 - **The plan is free, not starter**, whatever `render.yaml` says. It sleeps.
 
+## HIPAA on GHL sub-accounts (2026-11-18)
+
+- **What went wrong:** every sub-account `ghl.provision_subaccount` created
+  had GHL's HIPAA switch off (16 clients, found 2026-11-18, all turned on by
+  hand that day except one churned client, deliberately left off).
+- **The engine cannot turn it on.** `POST /locations/` has no HIPAA field, GHL
+  documents no API for it, there is no agency-wide default, and the snapshot
+  does not carry it. The switch lives on the agency side: Sub-Accounts > client
+  > Manage Client (`/accounts/detail/<locationId>`) > Advanced Settings >
+  Advanced Email Settings > HIPAA. It asks for a browser `confirm()` and can
+  never be turned off again.
+- **So it is a loud manual step:** `slack.wave1_rollup` puts a HIPAA action
+  line (with the Manage Client link) under the GHL sub-account line, above the
+  A2P line. The "2.1 ClinicWhiz Account Set Up" task in all three ClickUp
+  onboarding sample lists (Practice Pro, Smart Start, Whiz Works) carries the
+  same step in its description, which `clickup.onboarding_list` copies.
+  If GHL ever adds an API for it, do it in `provisionSubaccountReal` and drop
+  the action line.
+
 ## Production URL + Zapier wiring (IMPORTANT - stop asking the user for this)
 
 - **Live service URL: `https://onboarding-engine-h299.onrender.com`**

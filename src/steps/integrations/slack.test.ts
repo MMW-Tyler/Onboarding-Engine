@@ -278,3 +278,27 @@ describe('buildWave1Content - DMARC on the DNS line', () => {
     expect(dnsLine({ status: 'flagged', last_error: 'setHosts failed', output_json: null })).not.toContain('DMARC');
   });
 });
+
+describe('buildWave1Content - GHL sub-account action lines', () => {
+  const run = { id: 'run-1', client_name: 'Coastal Aesthetics', ghl_location_id: 'LOC123', client_profile_json: {} };
+  const steps = new Map<string, any>(Object.entries({ 'ghl.provision_subaccount': { status: 'succeeded' } }));
+
+  it('tells the team to turn on HIPAA, linking the Manage Client page', () => {
+    const lines = buildWave1Content(run, steps, true).assetLines.join('\n');
+    expect(lines).toContain('turn on *HIPAA*');
+    expect(lines).toContain('<https://app.medicalmarketingwhiz.com/accounts/detail/LOC123|Manage Client>');
+    // HIPAA first (one click), then the A2P line (days of waiting).
+    expect(lines.indexOf('HIPAA')).toBeLessThan(lines.indexOf('A2P'));
+  });
+
+  it('uses a raw URL in the copy-paste roll-up', () => {
+    const lines = buildWave1Content(run, steps, false).assetLines.join('\n');
+    expect(lines).toContain('https://app.medicalmarketingwhiz.com/accounts/detail/LOC123');
+    expect(lines).not.toContain('<https://app.medicalmarketingwhiz.com/accounts/detail/');
+  });
+
+  it('says nothing about HIPAA when there is no sub-account', () => {
+    const lines = buildWave1Content({ ...run, ghl_location_id: undefined }, steps, true).assetLines.join('\n');
+    expect(lines).not.toContain('HIPAA');
+  });
+});
