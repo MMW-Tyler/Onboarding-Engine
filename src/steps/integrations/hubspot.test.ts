@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { domainFrom, companyLookups } from './hubspot.js';
+import { domainFrom, companyLookups, customerStageFor, lifecycleSummary } from './hubspot.js';
+
+describe('hubspot lifecycle stage', () => {
+  it('moves blank and pre-customer stages to customer', () => {
+    for (const s of [null, undefined, '', 'subscriber', 'lead', 'marketingqualifiedlead', 'salesqualifiedlead', 'opportunity', 'Lead']) {
+      expect(customerStageFor(s)).toBe('customer');
+    }
+  });
+
+  it('never moves a stage backward or touches a custom one', () => {
+    for (const s of ['customer', 'evangelist', 'other', '123456789']) expect(customerStageFor(s)).toBeNull();
+  });
+
+  it('says what happened in the roll-up', () => {
+    expect(lifecycleSummary({ company: 'set', contactsSet: 1, contactsKept: [] })).toBe('company and 1 contact set to Customer');
+    expect(lifecycleSummary({ company: 'set', contactsSet: 2, contactsKept: [] })).toBe('company and 2 contacts set to Customer');
+    expect(lifecycleSummary({ company: 'customer', contactsSet: 0, contactsKept: ['customer'] })).toBe('already Customer');
+    expect(lifecycleSummary({ company: 'evangelist', contactsSet: 1, contactsKept: [] })).toBe('1 contact set to Customer, company left at evangelist');
+    expect(lifecycleSummary({ company: 'set', contactsSet: 0, contactsKept: ['other'] })).toBe('company set to Customer, 1 contact left at other');
+    expect(lifecycleSummary(undefined)).toBe('');
+  });
+});
 
 describe('hubspot company dedup', () => {
   it('drops www so the domain matches how HubSpot stores it', () => {

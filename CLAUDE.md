@@ -190,6 +190,19 @@ Still outstanding, both human jobs in ClickUp:
   need an edit in Zapier (Tyler's login).
 - **The plan is free, not starter**, whatever `render.yaml` says. It sleeps.
 
+## HubSpot lifecycle stage = Customer (2026-11-19)
+
+- `hubspot.upsert` now sets `lifecyclestage=customer` on the company and on
+  each contact it finds or creates. The intake form means a signed contract,
+  and onboarding step 0.5 is "Change Contact Lifecycle stage to Customer";
+  WhizHQ's Onboarding Manager proves 0.5 from HubSpot (rule
+  `hs.lifecycle_customer`) and checks it off by itself once it sees it.
+- **Forward only** (`customerStageFor`): blank, subscriber, lead, MQL, SQL and
+  opportunity become customer. Customer, evangelist, other and any custom stage
+  are left alone (HubSpot will not move a stage backward through the API).
+- The roll-up's HubSpot line says what happened ("company and 1 contact set to
+  Customer", "already Customer", "company left at evangelist").
+
 ## HIPAA on GHL sub-accounts (2026-11-18)
 
 - **What went wrong:** every sub-account `ghl.provision_subaccount` created

@@ -5,6 +5,7 @@ import { config } from '../../config.js';
 import { profileOf, siblingOutput, simId, simulated, slugifyChannel, chunkText } from './util.js';
 import { SCHEMAS } from '../../profile/canonical.js';
 import { readReturningAnswers, findPriorRun, type RunSummary } from '../../lib/returning.js';
+import { lifecycleSummary } from './hubspot.js';
 
 /**
  * Slack workers (spec section 11): create the client channel, post the sale
@@ -800,7 +801,9 @@ export function buildWave1Content(
   if (companyId) {
     const portal = config.hubspot.portalId();
     const v = portal ? val(`https://app.hubspot.com/contacts/${portal}/company/${companyId}`, 'Open in HubSpot') : `id ${companyId}`;
-    assetLines.push(`${rollupEmoji(stat('hubspot.upsert'))}  *HubSpot company*  —  ${v}`);
+    // Lifecycle stage: WhizHQ's Onboarding Manager closes step 0.5 from it.
+    const stage = lifecycleSummary(out('hubspot.upsert').lifecycle);
+    assetLines.push(`${rollupEmoji(stat('hubspot.upsert'))}  *HubSpot company*  —  ${v}${stage ? ` · ${stage}` : ''}`);
   }
 
   const folderId = r.clickup_folder_id as string | undefined;

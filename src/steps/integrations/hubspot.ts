@@ -59,21 +59,72 @@ export function companyLookups(name: string, domain: string): [string, string][]
 
 // --- search helpers (dedup): find an existing record before creating one ---
 
-/** Search a HubSpot CRM object by an exact property match; return the first id. */
-async function searchId(
+/**
+ * Search a HubSpot CRM object by an exact property match; return the first
+ * record's id and lifecycle stage, or null when nothing matches.
+ */
+async function searchFirst(
   ctx: StepContext,
   headers: Record<string, string>,
   object: 'companies' | 'contacts',
   propertyName: string,
   value: string,
-): Promise<string | null> {
+): Promise<{ id: string; lifecyclestage: string | null } | null> {
   if (!value) return null;
   const res = await callApi<any>(ctx, `${BASE}/crm/v3/objects/${object}/search`, `hubspot.${object}.search`, {
     method: 'POST',
     headers,
-    json: { filterGroups: [{ filters: [{ propertyName, operator: 'EQ', value }] }], properties: [propertyName], limit: 1 },
+    json: { filterGroups: [{ filters: [{ propertyName, operator: 'EQ', value }] }], properties: [propertyName, 'lifecyclestage'], limit: 1 },
   });
-  return (res.body?.results?.[0]?.id as string | undefined) ?? null;
+  const hit = res.body?.results?.[0];
+  if (!hit?.id) return null;
+  return { id: String(hit.id), lifecyclestage: (hit.properties?.lifecyclestage as string | undefined) || null };
+}
+
+// --- lifecycle stage: a signed client is a Customer ---
+
+/**
+ * HubSpot's standard lifecycle stages that come before "customer". The Sales
+ * Intake form is sent after the contract is signed, so the company and its
+ * contacts are customers from this run on. That is onboarding step 0.5, which
+ * WhizHQ's Onboarding Manager proves from HubSpot and checks off by itself once
+ * the company and a contact both say Customer (2026-11-19: a new client sat at
+ * "Lead" because nothing set it).
+ */
+const BEFORE_CUSTOMER = new Set(['subscriber', 'lead', 'marketingqualifiedlead', 'salesqualifiedlead', 'opportunity']);
+
+/**
+ * The stage to write for a record that is at `current` now: "customer" when it
+ * is blank or an earlier stage, otherwise null (leave it alone). HubSpot only
+ * moves a stage forward through the API, and evangelist, other or a custom
+ * stage is a choice somebody made.
+ */
+export function customerStageFor(current: string | null | undefined): 'customer' | null {
+  const stage = String(current || '').trim().toLowerCase();
+  return !stage || BEFORE_CUSTOMER.has(stage) ? 'customer' : null;
+}
+
+export interface LifecycleResult {
+  /** "set", or the stage the company was left at ("customer", "evangelist", ...). */
+  company?: string;
+  contactsSet?: number;
+  /** Stages of contacts left as they were (already customer or later). */
+  contactsKept?: string[];
+}
+
+/** The roll-up's words for what happened to lifecycle stages ("" when nothing to say). */
+export function lifecycleSummary(l: LifecycleResult | undefined): string {
+  if (!l) return '';
+  const n = l.contactsSet || 0;
+  const contacts = n ? `${n} contact${n === 1 ? '' : 's'}` : '';
+  const parts: string[] = [];
+  if (l.company === 'set') parts.push(contacts ? `company and ${contacts} set to Customer` : 'company set to Customer');
+  else if (contacts) parts.push(`${contacts} set to Customer`);
+  if (l.company && l.company !== 'set' && l.company !== 'customer') parts.push(`company left at ${l.company}`);
+  const keptLater = (l.contactsKept || []).filter((s) => s !== 'customer');
+  if (keptLater.length) parts.push(`${keptLater.length} contact${keptLater.length === 1 ? '' : 's'} left at ${[...new Set(keptLater)].join(', ')}`);
+  if (!parts.length && (l.company === 'customer' || (l.contactsKept || []).length)) parts.push('already Customer');
+  return parts.join(', ');
 }
 
 /** Associate a contact to a company using the v4 default (primary) association. */
@@ -116,11 +167,16 @@ async function upsertReal(ctx: StepContext): Promise<Record<string, unknown>> {
     if (!companyProperties[key]) delete companyProperties[key];
   }
 
-  let existingCompanyId: string | null = null;
+  let existingCompany: { id: string; lifecyclestage: string | null } | null = null;
   for (const [prop, value] of companyLookups(name, domain)) {
-    existingCompanyId = await searchId(ctx, headers, 'companies', prop, value);
-    if (existingCompanyId) break;
+    existingCompany = await searchFirst(ctx, headers, 'companies', prop, value);
+    if (existingCompany) break;
   }
+  const existingCompanyId = existingCompany?.id ?? null;
+  // Signed client: move the company to Customer (forward only, see customerStageFor).
+  const companyStage = customerStageFor(existingCompany?.lifecyclestage);
+  if (companyStage) companyProperties.lifecyclestage = companyStage;
+  const companyLifecycle = companyStage ? 'set' : String(existingCompany?.lifecyclestage);
   // An existing record keeps its own name and domain (sales' "Example Clinic" must
   // not be renamed "Example Clinic (Dr. Jane Doe)"); phone, city and state still fill in.
   if (existingCompanyId) {
@@ -164,6 +220,8 @@ async function upsertReal(ctx: StepContext): Promise<Record<string, unknown>> {
   //    domain (e.g. zippymail.info) instead of the real client company.
   const contactsCreated: string[] = [];
   let associated = 0;
+  let contactsSet = 0;
+  const contactsKept: string[] = [];
 
   const candidates: Array<{ email: string | undefined; firstName?: string; lastName?: string; fullName?: string }> = [
     { email: p.doctor_email, firstName: p.doctor_first_name, lastName: p.doctor_last_name },
@@ -184,7 +242,15 @@ async function upsertReal(ctx: StepContext): Promise<Record<string, unknown>> {
     }
 
     // Dedup by email: update the existing contact, or create a new one.
-    let contactId = await searchId(ctx, headers, 'contacts', 'email', candidate.email);
+    const existingContact = await searchFirst(ctx, headers, 'contacts', 'email', candidate.email);
+    let contactId = existingContact?.id ?? null;
+    const contactStage = customerStageFor(existingContact?.lifecyclestage);
+    if (contactStage) {
+      contactProperties.lifecyclestage = contactStage;
+      contactsSet += 1;
+    } else if (existingContact?.lifecyclestage) {
+      contactsKept.push(existingContact.lifecyclestage);
+    }
     if (contactId) {
       await callApi<any>(ctx, `${BASE}/crm/v3/objects/contacts/${contactId}`, 'hubspot.contacts.update', {
         method: 'PATCH',
@@ -211,7 +277,8 @@ async function upsertReal(ctx: StepContext): Promise<Record<string, unknown>> {
     }
   }
 
-  return { company_id: companyId, company_existed: companyExisted, contacts: contactsCreated, associated };
+  const lifecycle: LifecycleResult = { company: companyLifecycle, contactsSet, contactsKept };
+  return { company_id: companyId, company_existed: companyExisted, contacts: contactsCreated, associated, lifecycle };
 }
 
 async function upsertDry(ctx: StepContext): Promise<Record<string, unknown>> {
